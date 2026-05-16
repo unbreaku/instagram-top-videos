@@ -32,6 +32,7 @@ const PROTECTED_API: ApiRule[] = [
   { method: "POST", pathPrefix: "/api/videos/" },
   { method: "POST", pathPrefix: "/api/migrate" },
   { method: "GET", pathPrefix: "/api/migrate" },
+  { method: "POST", pathPrefix: "/api/sweep-runs" },
 ];
 
 function eq(a: string, b: string): boolean {

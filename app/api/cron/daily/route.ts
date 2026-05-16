@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { runSync } from "@/lib/apify";
 import { ingestApifyItems } from "@/lib/ingest";
 import { analyzeOneVideo } from "@/lib/analyze";
+import { sweepStuckRuns } from "@/lib/sweep";
 import { getServerSupabase } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -38,6 +39,12 @@ export async function GET(req: Request) {
   }
 
   const sb = getServerSupabase();
+
+  // First, reconcile any in-flight scrape runs that finished while no one was
+  // polling them. This catches users who added an account and closed the tab
+  // before the client-side polling ingested the dataset.
+  const sweep = await sweepStuckRuns({ maxRuns: 10, deadlineMs: 15_000 });
+
   // Hard-delete soft-deleted accounts older than retention window. Cascades
   // handle videos/snapshots/runs automatically.
   const cutoff = new Date(
@@ -119,6 +126,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     ran_at: new Date().toISOString(),
+    sweep,
     purged_accounts: (purged || []).map((p) => p.username),
     refresh: results,
     analyze: analyzeResults,

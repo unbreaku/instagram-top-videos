@@ -12,6 +12,18 @@ interface Account {
   profile_pic_url?: string | null;
   display_name?: string | null;
   deleted_at?: string | null;
+  status?: {
+    scrape_active: boolean;
+    last_run_status: string | null;
+    last_run_started_at: string | null;
+    last_run_error: string | null;
+    pending_analysis: number;
+  };
+}
+
+function ageMin(iso: string | null | undefined): number {
+  if (!iso) return Infinity;
+  return (Date.now() - new Date(iso).getTime()) / 60000;
 }
 
 interface MigrationStatus {
@@ -88,6 +100,15 @@ export default function AccountsPage() {
     refresh();
     loadMigrations();
   }, []);
+
+  // Poll-refresh while any background scrape is active so badges update on
+  // their own without the user having to mash refresh.
+  useEffect(() => {
+    const anyActive = accounts.some((a) => a.status?.scrape_active);
+    if (!anyActive) return;
+    const id = setInterval(refresh, 15_000);
+    return () => clearInterval(id);
+  }, [accounts]);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -278,6 +299,20 @@ export default function AccountsPage() {
     refresh();
   }
 
+  async function sweepRuns() {
+    setBusyAction("sweep");
+    setMsg("Reconciliando trabajos pendientes con Apify…");
+    const res = await fetch("/api/sweep-runs", { method: "POST" });
+    const j = await res.json();
+    setBusyAction(null);
+    if (!res.ok) setMsg(`Error: ${j.error || res.status}`);
+    else
+      setMsg(
+        `Sweep: revisé ${j.swept}, ingerí ${j.ingested}, fallaron ${j.failed}.`,
+      );
+    refresh();
+  }
+
   async function applyMigrations() {
     setBusyAction("migrate");
     setMsg("Aplicando migraciones pendientes…");
@@ -378,6 +413,26 @@ export default function AccountsPage() {
         </div>
       )}
 
+      {/* SWEEP BUTTON */}
+      {accounts.some(
+        (a) => a.status?.scrape_active || (a.status?.pending_analysis ?? 0) > 0,
+      ) && (
+        <div className="mt-4 flex items-center justify-between rounded-md border border-blue-200 bg-blue-50 p-3 text-sm">
+          <div className="text-blue-900">
+            Hay trabajos en background. La página se refresca sola cada 15s.
+          </div>
+          <button
+            onClick={sweepRuns}
+            disabled={busyAction === "sweep"}
+            className="rounded-md border border-blue-300 bg-white px-3 py-1.5 text-xs hover:bg-blue-100 disabled:opacity-50"
+          >
+            {busyAction === "sweep"
+              ? "Sincronizando…"
+              : "Sincronizar trabajos pendientes"}
+          </button>
+        </div>
+      )}
+
       {/* EXISTING ACCOUNTS LIST */}
       <ul className="mt-6 divide-y divide-zinc-100 rounded-xl border border-zinc-200 bg-white shadow-sm">
         {accounts.map((a) => (
@@ -403,7 +458,36 @@ export default function AccountsPage() {
               </div>
             )}
             <div className="flex-1">
-              <div className="font-medium">@{a.username}</div>
+              <div className="flex items-center gap-2">
+                <span className="font-medium">@{a.username}</span>
+                {a.status?.scrape_active && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-800"
+                    title={`Scrape ${a.status.last_run_status} en Apify desde hace ${Math.round(ageMin(a.status.last_run_started_at))} min. Si pasaron > 10 min, dale a 'Sincronizar trabajos pendientes' arriba.`}
+                  >
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-600" />
+                    Scrapeando ({Math.round(ageMin(a.status.last_run_started_at))} min)
+                  </span>
+                )}
+                {a.status &&
+                  !a.status.scrape_active &&
+                  a.status.pending_analysis > 0 && (
+                    <span
+                      className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800"
+                      title="Videos con video_url y +5k vistas que aún no pasaron por Deepgram+Claude. El cron diario procesa 6 por cuenta; podés acelerar con 'Continuar analizando pendientes' en el menú •••."
+                    >
+                      {a.status.pending_analysis} sin analizar
+                    </span>
+                  )}
+                {a.status?.last_run_status === "FAILED" && (
+                  <span
+                    className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-800"
+                    title={a.status.last_run_error || "Último scrape falló"}
+                  >
+                    último scrape ✗
+                  </span>
+                )}
+              </div>
               <div
                 className="text-xs text-zinc-500"
                 title={

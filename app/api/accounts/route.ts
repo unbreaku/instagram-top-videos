@@ -21,54 +21,89 @@ export async function GET(req: Request) {
   if (error)
     return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Augment with latest follower count + video count
+  // Augment with latest follower count, video count, AND background-job status
+  // so the UI can render badges without a separate roundtrip per account.
   const usernames = (accounts || []).map((a) => a.username);
-  const [videoCounts, latestSnaps] = await Promise.all([
-    Promise.all(
-      usernames.map((u) =>
-        sb
-          .from("videos")
-          .select("shortcode", { count: "exact", head: true })
-          .eq("account_username", u)
-          .then(({ count }) => ({ u, count: count ?? 0 })),
+  const [videoCounts, latestSnaps, lastRuns, pendingAnalyses] = await Promise.all(
+    [
+      Promise.all(
+        usernames.map((u) =>
+          sb
+            .from("videos")
+            .select("shortcode", { count: "exact", head: true })
+            .eq("account_username", u)
+            .then(({ count }) => ({ u, count: count ?? 0 })),
+        ),
       ),
-    ),
-    Promise.all(
-      usernames.map((u) =>
-        sb
-          .from("account_snapshots")
-          .select("captured_at, followers_count, posts_count")
-          .eq("account_username", u)
-          .order("captured_at", { ascending: false })
-          .limit(1)
-          .maybeSingle()
-          .then(({ data }) => ({
-            u,
-            followers: data?.followers_count ?? null,
-            posts_ig: data?.posts_count ?? null,
-          })),
+      Promise.all(
+        usernames.map((u) =>
+          sb
+            .from("account_snapshots")
+            .select("captured_at, followers_count, posts_count")
+            .eq("account_username", u)
+            .order("captured_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+            .then(({ data }) => ({
+              u,
+              followers: data?.followers_count ?? null,
+              posts_ig: data?.posts_count ?? null,
+            })),
+        ),
       ),
-    ),
-  ]);
+      Promise.all(
+        usernames.map((u) =>
+          sb
+            .from("apify_runs")
+            .select("run_id, status, started_at, error")
+            .eq("account_username", u)
+            .order("started_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+            .then(({ data }) => ({ u, run: data })),
+        ),
+      ),
+      Promise.all(
+        usernames.map((u) =>
+          sb
+            .from("videos")
+            .select("shortcode", { count: "exact", head: true })
+            .eq("account_username", u)
+            .is("analyzed_at", null)
+            .not("video_url", "is", null)
+            .gte("latest_views", 5000)
+            .then(({ count }) => ({ u, count: count ?? 0 })),
+        ),
+      ),
+    ],
+  );
   const countMap = new Map(videoCounts.map((c) => [c.u, c.count]));
   const snapMap = new Map(
     latestSnaps.map((s) => [s.u, { followers: s.followers, posts_ig: s.posts_ig }]),
   );
+  const runMap = new Map(lastRuns.map((r) => [r.u, r.run]));
+  const pendingMap = new Map(pendingAnalyses.map((p) => [p.u, p.count]));
 
   return NextResponse.json({
     accounts: (accounts || []).map((a) => {
       const snap = snapMap.get(a.username);
       const inDb = countMap.get(a.username) ?? 0;
+      const run = runMap.get(a.username);
+      const isActive =
+        !!run && (run.status === "RUNNING" || run.status === "READY");
       return {
         ...a,
-        // posts_count is what Instagram itself reports on the profile header.
-        // posts_in_db is what Apify managed to actually fetch — bounded by the
-        // public-API pagination cap.
         posts_count: snap?.posts_ig ?? null,
         posts_in_db: inDb,
-        // Kept for backward compatibility with old callers.
         video_count: inDb,
         followers_latest: snap?.followers ?? null,
+        status: {
+          scrape_active: isActive,
+          last_run_status: run?.status ?? null,
+          last_run_started_at: run?.started_at ?? null,
+          last_run_error: run?.error ?? null,
+          pending_analysis: pendingMap.get(a.username) ?? 0,
+        },
       };
     }),
   });
