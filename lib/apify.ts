@@ -53,7 +53,10 @@ export function classifyType(item: ApifyInstagramItem): string {
   const pt = (item.productType || "").toLowerCase();
   if (pt === "clips") return "Reel";
   if (pt === "igtv") return "IGTV";
-  if ((item.type || "").toLowerCase() === "video") return "Video";
+  const t = (item.type || "").toLowerCase();
+  if (t === "video") return "Video";
+  if (t === "image") return "Image";
+  if (t === "sidecar") return "Sidecar";
   return "Other";
 }
 

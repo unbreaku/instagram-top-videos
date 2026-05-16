@@ -14,11 +14,15 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const minViews = Number(searchParams.get("min_views") ?? 0);
 
-  const { data: videos, error } = await sb
+  // We use analyzed_at IS NOT NULL because Supabase's REST API treats
+  // array-column IS NULL queries inconsistently. analyzed_at is a clean
+  // timestamp set the moment we successfully store format_tags.
+  let q = sb
     .from("videos")
     .select("account_username, format_tags, latest_views, hook, cta, shortcode, url")
-    .not("format_tags", "is", null)
-    .gte("latest_views", minViews);
+    .not("analyzed_at", "is", null);
+  if (minViews > 0) q = q.gte("latest_views", minViews);
+  const { data: videos, error } = await q;
   if (error)
     return NextResponse.json({ error: error.message }, { status: 500 });
 

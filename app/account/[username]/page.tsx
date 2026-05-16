@@ -46,6 +46,22 @@ interface AccountDetail {
   snapshots: Snapshot[];
 }
 
+interface DailyLift {
+  date: string;
+  followers: number;
+  delta: number | null;
+  videos: Array<{
+    shortcode: string;
+    url: string;
+    type: string | null;
+    posted_at: string;
+    caption: string | null;
+    hook: string | null;
+    latest_views: number | null;
+    latest_likes: number | null;
+  }>;
+}
+
 function fmt(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   return new Intl.NumberFormat("es-CO").format(n);
@@ -74,6 +90,7 @@ export default function AccountPage({
 }) {
   const [detail, setDetail] = useState<AccountDetail | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
+  const [lifts, setLifts] = useState<DailyLift[]>([]);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>("views");
   const [analyzing, setAnalyzing] = useState(false);
@@ -82,15 +99,18 @@ export default function AccountPage({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [aRes, vRes] = await Promise.all([
+      const [aRes, vRes, lRes] = await Promise.all([
         fetch(`/api/accounts/${params.username}`),
         fetch(`/api/accounts/${params.username}/videos?sort=${sort}&limit=500`),
+        fetch(`/api/accounts/${params.username}/lifts`),
       ]);
       const a = await aRes.json();
       const v = await vRes.json();
+      const l = await lRes.json();
       if (cancelled) return;
       setDetail(a);
       setVideos(v.videos || []);
+      setLifts(l.lifts || []);
       setLoading(false);
     })();
     return () => {
@@ -170,6 +190,90 @@ export default function AccountPage({
                 />
               </LineChart>
             </ResponsiveContainer>
+          </div>
+        </section>
+      )}
+
+      {lifts.length > 1 && (
+        <section className="mb-10">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+            Crecimiento diario · videos atribuibles
+          </h2>
+          <p className="mb-3 text-xs text-zinc-500">
+            Cada fila es un día medido por el cron. El delta es la diferencia
+            de followers vs el día anterior. Los videos listados son los
+            publicados en esa ventana — probablemente responsables del lift.
+          </p>
+          <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm">
+            <table className="w-full border-collapse text-sm">
+              <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="px-3 py-2">Fecha</th>
+                  <th className="px-3 py-2 text-right">Followers</th>
+                  <th className="px-3 py-2 text-right">Δ followers</th>
+                  <th className="px-3 py-2">Videos publicados</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lifts.map((l) => (
+                  <tr
+                    key={l.date}
+                    className="border-t border-zinc-100 align-top hover:bg-zinc-50"
+                  >
+                    <td className="whitespace-nowrap px-3 py-2 text-zinc-700">
+                      {l.date}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {fmt(l.followers)}
+                    </td>
+                    <td
+                      className={`px-3 py-2 text-right tabular-nums ${
+                        l.delta == null
+                          ? "text-zinc-400"
+                          : l.delta > 0
+                            ? "text-emerald-700"
+                            : l.delta < 0
+                              ? "text-red-700"
+                              : "text-zinc-600"
+                      }`}
+                    >
+                      {l.delta == null
+                        ? "—"
+                        : `${l.delta > 0 ? "+" : ""}${fmt(l.delta)}`}
+                    </td>
+                    <td className="px-3 py-2">
+                      {l.videos.length === 0 ? (
+                        <span className="text-xs text-zinc-400">ninguno</span>
+                      ) : (
+                        <ul className="space-y-1">
+                          {l.videos.map((v) => (
+                            <li key={v.shortcode} className="text-xs">
+                              <a
+                                href={v.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-blue-600 hover:underline"
+                              >
+                                {v.type || "Post"} ·{" "}
+                                {fmt(v.latest_views)} vistas
+                              </a>
+                              {v.hook && (
+                                <span className="text-zinc-600">
+                                  {" — "}
+                                  {v.hook.length > 80
+                                    ? v.hook.slice(0, 79) + "…"
+                                    : v.hook}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       )}

@@ -10,6 +10,7 @@ export interface IngestResult {
   videosAdded: number;
   videosUpdated: number;
   snapshotsAdded: number;
+  postsTotal: number; // includes images + sidecars
 }
 
 /**
@@ -51,8 +52,11 @@ export async function ingestApifyItems(
     });
   }
 
-  // ---------- videos ----------
-  const videos = items.filter(isVideoItem).filter((i) => i.shortCode);
+  // ---------- posts (videos + images + sidecars) ----------
+  // We store every post so the totals on the dashboard match the count the
+  // user sees on Instagram. Photos just have null video_url / null views and
+  // are naturally skipped by the analyze pipeline.
+  const videos = items.filter((i) => i.shortCode);
 
   // Find which shortcodes already exist so we can report added vs updated.
   const shortcodes = videos.map((v) => v.shortCode!);
@@ -106,14 +110,17 @@ export async function ingestApifyItems(
     }
   }
 
-  // Snapshot every video in one (or a few) batch insert(s).
-  const snapshotRows = videos.map((item) => ({
-    video_shortcode: item.shortCode!,
-    views: extractViews(item) || null,
-    likes: item.likesCount ?? null,
-    comments: item.commentsCount ?? null,
-    captured_at: now,
-  }));
+  // Snapshot only the actual videos (avoids inserting useless null rows for
+  // photo-only posts).
+  const snapshotRows = videos
+    .filter((item) => isVideoItem(item))
+    .map((item) => ({
+      video_shortcode: item.shortCode!,
+      views: extractViews(item) || null,
+      likes: item.likesCount ?? null,
+      comments: item.commentsCount ?? null,
+      captured_at: now,
+    }));
 
   let snapshotsAdded = 0;
   for (let i = 0; i < snapshotRows.length; i += 1000) {
@@ -129,5 +136,5 @@ export async function ingestApifyItems(
     .update({ last_full_scrape_at: now })
     .eq("username", cleanUsername);
 
-  return { videosAdded, videosUpdated, snapshotsAdded };
+  return { videosAdded, videosUpdated, snapshotsAdded, postsTotal: videos.length };
 }
