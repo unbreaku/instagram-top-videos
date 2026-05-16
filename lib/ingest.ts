@@ -13,10 +13,12 @@ export interface IngestResult {
 }
 
 /**
- * Takes raw Apify items for one account and:
- *   - Upserts the account profile fields (from parent data if available)
- *   - Inserts an account_snapshot if profile data is present
- *   - Upserts each video and appends a video_snapshot row
+ * Takes raw Apify items for one account and persists them.
+ *
+ * Uses bulk upsert for videos and batched inserts for snapshots so the whole
+ * thing finishes well under the 60s Vercel function timeout even with 1k+
+ * items. Previous implementation did one round-trip per video, which blew up
+ * past ~300 videos.
  */
 export async function ingestApifyItems(
   username: string,
@@ -24,9 +26,9 @@ export async function ingestApifyItems(
 ): Promise<IngestResult> {
   const sb = getServerSupabase();
   const cleanUsername = username.replace(/^@/, "").toLowerCase();
+  const now = new Date().toISOString();
 
-  // 1) Profile fields are repeated on each post when addParentData=true.
-  //    Take the first item that has them.
+  // ---------- profile snapshot ----------
   const profileItem = items.find(
     (it) =>
       typeof it.ownerFollowersCount === "number" ||
@@ -34,13 +36,12 @@ export async function ingestApifyItems(
   );
 
   if (profileItem) {
-    await sb
-      .from("accounts")
-      .update({
-        display_name: profileItem.ownerFullName ?? undefined,
-      })
-      .eq("username", cleanUsername);
-
+    if (profileItem.ownerFullName) {
+      await sb
+        .from("accounts")
+        .update({ display_name: profileItem.ownerFullName })
+        .eq("username", cleanUsername);
+    }
     await sb.from("account_snapshots").insert({
       account_username: cleanUsername,
       followers_count: profileItem.ownerFollowersCount ?? null,
@@ -50,35 +51,33 @@ export async function ingestApifyItems(
     });
   }
 
-  // 2) Videos
-  const videos = items.filter(isVideoItem);
-  let videosAdded = 0;
-  let videosUpdated = 0;
-  let snapshotsAdded = 0;
+  // ---------- videos ----------
+  const videos = items.filter(isVideoItem).filter((i) => i.shortCode);
 
-  for (const item of videos) {
-    const shortcode = item.shortCode;
-    if (!shortcode) continue;
-    const url =
-      item.url || `https://www.instagram.com/p/${shortcode}/`;
-
-    // Upsert video. We use ignoreDuplicates=false to merge fields.
-    const { data: existing } = await sb
+  // Find which shortcodes already exist so we can report added vs updated.
+  const shortcodes = videos.map((v) => v.shortCode!);
+  const existingSet = new Set<string>();
+  for (let i = 0; i < shortcodes.length; i += 1000) {
+    const slice = shortcodes.slice(i, i + 1000);
+    const { data } = await sb
       .from("videos")
       .select("shortcode")
-      .eq("shortcode", shortcode)
-      .maybeSingle();
+      .in("shortcode", slice);
+    (data || []).forEach((r) => existingSet.add(r.shortcode as string));
+  }
 
+  const videoRows = videos.map((item) => {
+    const shortcode = item.shortCode!;
     const views = extractViews(item);
-    const payload = {
+    return {
       shortcode,
       account_username: cleanUsername,
       type: classifyType(item),
       caption: (item.caption || "").trim() || null,
       posted_at: item.timestamp || null,
-      url,
-      // Direct CDN URL to the mp4 file, used by the transcription pipeline.
-      // It expires after ~1h, so we re-store it on every ingest.
+      url: item.url || `https://www.instagram.com/p/${shortcode}/`,
+      // Time-limited Instagram CDN URL. Re-stored on each ingest so the
+      // transcription pipeline always gets a fresh one.
       video_url: item.videoUrl || null,
       thumbnail_url: item.displayUrl || null,
       duration_seconds:
@@ -88,30 +87,46 @@ export async function ingestApifyItems(
       latest_views: views || null,
       latest_likes: item.likesCount ?? null,
       latest_comments: item.commentsCount ?? null,
-      latest_captured_at: new Date().toISOString(),
+      latest_captured_at: now,
     };
+  });
 
-    if (existing) {
-      await sb.from("videos").update(payload).eq("shortcode", shortcode);
-      videosUpdated += 1;
-    } else {
-      await sb.from("videos").insert(payload);
-      videosAdded += 1;
+  // Bulk upsert in chunks of 500 to stay under request size limits.
+  let videosAdded = 0;
+  let videosUpdated = 0;
+  for (let i = 0; i < videoRows.length; i += 500) {
+    const chunk = videoRows.slice(i, i + 500);
+    const { error } = await sb
+      .from("videos")
+      .upsert(chunk, { onConflict: "shortcode" });
+    if (error) throw new Error(`videos upsert: ${error.message}`);
+    for (const row of chunk) {
+      if (existingSet.has(row.shortcode)) videosUpdated += 1;
+      else videosAdded += 1;
     }
-
-    await sb.from("video_snapshots").insert({
-      video_shortcode: shortcode,
-      views: views || null,
-      likes: item.likesCount ?? null,
-      comments: item.commentsCount ?? null,
-    });
-    snapshotsAdded += 1;
   }
 
-  // 3) Mark the account as scraped
+  // Snapshot every video in one (or a few) batch insert(s).
+  const snapshotRows = videos.map((item) => ({
+    video_shortcode: item.shortCode!,
+    views: extractViews(item) || null,
+    likes: item.likesCount ?? null,
+    comments: item.commentsCount ?? null,
+    captured_at: now,
+  }));
+
+  let snapshotsAdded = 0;
+  for (let i = 0; i < snapshotRows.length; i += 1000) {
+    const chunk = snapshotRows.slice(i, i + 1000);
+    const { error } = await sb.from("video_snapshots").insert(chunk);
+    if (error) throw new Error(`video_snapshots insert: ${error.message}`);
+    snapshotsAdded += chunk.length;
+  }
+
+  // ---------- mark scrape time ----------
   await sb
     .from("accounts")
-    .update({ last_full_scrape_at: new Date().toISOString() })
+    .update({ last_full_scrape_at: now })
     .eq("username", cleanUsername);
 
   return { videosAdded, videosUpdated, snapshotsAdded };
