@@ -48,6 +48,28 @@ export async function sweepStuckRuns(opts: {
   for (const row of rows || []) {
     if (Date.now() > deadline) break;
 
+    // Orphaned runs (account was hard-deleted between scrape kickoff and
+    // ingest) can't go anywhere. Mark them failed and move on instead of
+    // tripping a FK violation every sweep.
+    if (!row.account_username) {
+      await sb
+        .from("apify_runs")
+        .update({
+          status: "FAILED",
+          finished_at: new Date().toISOString(),
+          error: "Account was deleted before the run could ingest.",
+        })
+        .eq("run_id", row.run_id);
+      result.failed += 1;
+      result.details.push({
+        run_id: row.run_id,
+        account: null,
+        status: "FAILED",
+        error: "orphan (account deleted)",
+      });
+      continue;
+    }
+
     let live;
     try {
       live = await getRunStatus(row.run_id);

@@ -484,6 +484,58 @@ export default function AccountPage({
           </h2>
         </div>
 
+        <details className="mb-4 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <summary className="cursor-pointer text-sm font-semibold text-zinc-700">
+            🏆 Cómo funciona el score Best to Copy
+          </summary>
+          <div className="mt-3 grid gap-3 text-xs text-zinc-700 sm:grid-cols-3">
+            <div className="rounded-md bg-zinc-50 p-3">
+              <div className="font-semibold text-zinc-900">
+                1. Performance (peso 55%)
+              </div>
+              <div className="mt-1 text-zinc-600">
+                vistas del post ÷ vistas del top de la cuenta. Así no
+                penalizamos cuentas chicas — un Reel con 100k en una cuenta
+                que máx llega a 120k es 0.83.
+              </div>
+            </div>
+            <div className="rounded-md bg-zinc-50 p-3">
+              <div className="font-semibold text-zinc-900">
+                2. Reproducibilidad (peso 30%)
+              </div>
+              <div className="mt-1 text-zinc-600">
+                Tiene transcript = 0.4 · hook = 0.3 · CTA = 0.2 · format_tags
+                = 0.1. Sin estas piezas no sirve para copiar.
+              </div>
+            </div>
+            <div className="rounded-md bg-zinc-50 p-3">
+              <div className="font-semibold text-zinc-900">
+                3. Validación cross-creator (peso 15%)
+              </div>
+              <div className="mt-1 text-zinc-600">
+                % de sus format_tags que también usan OTRAS cuentas. Si
+                varios creadores usan el mismo patrón = template real, no
+                accidente.
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 rounded-md bg-zinc-50 p-3 font-mono text-xs text-zinc-700">
+            score = (0.55 × performance + 0.30 × reproducibilidad + 0.15 ×
+            cross) × 100
+          </div>
+          <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
+            <span className="text-emerald-700">🏆 75+ Imperdible</span>
+            <span className="text-emerald-600">✨ 55+ Recomendado</span>
+            <span className="text-amber-700">👀 35+ Mirar</span>
+            <span className="text-zinc-400">· &lt;35 Saltar</span>
+          </div>
+          <p className="mt-2 text-[11px] text-zinc-500">
+            Hover sobre el número en la columna <em>Score copy</em> de cada
+            fila te da el desglose exacto: cuánto aportó cada componente y
+            qué le falta a ese post para subir.
+          </p>
+        </details>
+
         {/* FILTER PANEL */}
         <div className="mb-4 grid grid-cols-1 gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
           <label className="flex flex-col text-xs">
@@ -1056,12 +1108,12 @@ function Stats90d({
           <Stat90
             label="Posts"
             value={fmt(inWindow.length)}
-            help="Cantidad de posts publicados en los últimos 90 días (cuenta videos + fotos + carruseles)."
+            formula="cuenta videos + fotos + carruseles"
           />
           <Stat90
             label="Posts / día"
             value={postsPerDay.toFixed(1)}
-            help="Posts en el período ÷ 90. Indica frecuencia de publicación."
+            formula="posts ÷ 90"
           />
           <Stat90
             label="Δ Followers"
@@ -1071,32 +1123,32 @@ function Stats90d({
                 : `${followerDelta > 0 ? "+" : ""}${fmt(followerDelta)}`
             }
             positive={followerDelta != null ? followerDelta > 0 : undefined}
-            help="Diferencia entre el primer y último snapshot de followers dentro del período. Necesitas que el cron diario haya corrido al menos 2 días."
+            formula="último snap − primer snap"
           />
           <Stat90
             label="Engagement"
             value={`${engagementRate.toFixed(2)}%`}
-            help="(likes + comments) ÷ vistas, sumado sobre todos los posts del período. Solo entran los que tienen vistas registradas (las fotos suelen no tener)."
+            formula="(likes + comments) ÷ vistas × 100"
           />
           <Stat90
             label="Vistas totales"
             value={fmt(totalViews)}
-            help="Suma de vistas de todos los posts del período, medidas a la fecha de hoy (los posts viejos siguen acumulando, así que sube con el tiempo)."
+            formula="Σ vistas de cada post"
           />
           <Stat90
             label="Vistas / post"
             value={fmt(Math.round(avgViews))}
-            help="Promedio simple de vistas por post del período. Útil para benchmark de performance."
+            formula="vistas ÷ posts"
           />
           <Stat90
             label="Likes totales"
             value={fmt(totalLikes)}
-            help="Suma de likes de todos los posts del período."
+            formula="Σ likes de cada post"
           />
           <Stat90
             label="Likes / post"
             value={fmt(Math.round(avgLikes))}
-            help="Promedio simple de likes por post del período."
+            formula="likes ÷ posts"
           />
         </dl>
         {topPost && (
@@ -1173,12 +1225,13 @@ function Stat90({
   label,
   value,
   positive,
-  help,
+  formula,
 }: {
   label: string;
   value: string;
   positive?: boolean;
-  help?: string;
+  /** A short, always-visible formula shown under the value. */
+  formula?: string;
 }) {
   const color =
     positive === true
@@ -1187,16 +1240,16 @@ function Stat90({
         ? "text-red-700"
         : "text-zinc-900";
   return (
-    <div className="rounded-md bg-zinc-50 p-2" title={help}>
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-500">
-        <span>{label}</span>
-        {help && (
-          <span className="cursor-help text-zinc-400" aria-label={help}>
-            ⓘ
-          </span>
-        )}
+    <div className="rounded-md bg-zinc-50 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-zinc-500">
+        {label}
       </div>
       <div className={`font-semibold tabular-nums ${color}`}>{value}</div>
+      {formula && (
+        <div className="mt-0.5 text-[9px] leading-tight text-zinc-400">
+          {formula}
+        </div>
+      )}
     </div>
   );
 }
