@@ -6,13 +6,18 @@ export const dynamic = "force-dynamic";
 
 const USERNAME_RE = /^[a-z0-9_.]{1,30}$/i;
 
-export async function GET() {
+export async function GET(req: Request) {
   const sb = getServerSupabase();
-  const { data: accounts, error } = await sb
+  const { searchParams } = new URL(req.url);
+  const includeDeleted = searchParams.get("include_deleted") === "1";
+
+  let q = sb
     .from("accounts")
     .select("*")
     .order("is_pinned", { ascending: false })
     .order("username", { ascending: true });
+  if (!includeDeleted) q = q.is("deleted_at", null);
+  const { data: accounts, error } = await q;
   if (error)
     return NextResponse.json({ error: error.message }, { status: 500 });
 
@@ -68,9 +73,11 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   const sb = getServerSupabase();
+  // Upsert — and if the row was previously soft-deleted, undelete it.
   const { error } = await sb.from("accounts").upsert({
     username,
     is_pinned: Boolean(body.is_pinned),
+    deleted_at: null,
   });
   if (error)
     return NextResponse.json({ error: error.message }, { status: 500 });

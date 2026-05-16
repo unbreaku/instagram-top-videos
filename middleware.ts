@@ -26,6 +26,7 @@ const PROTECTED_API: ApiRule[] = [
   { method: "PATCH", pathPrefix: "/api/accounts/" },
   { method: "DELETE", pathPrefix: "/api/accounts/" },
   { method: "POST", pathPrefix: "/api/scrape-account" },
+  { method: "POST", pathPrefix: "/api/refresh-account" },
   { method: "POST", pathPrefix: "/api/analyze-pending" },
   { method: "POST", pathPrefix: "/api/videos/" },
 ];

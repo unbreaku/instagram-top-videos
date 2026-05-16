@@ -47,14 +47,51 @@ export async function PATCH(req: Request, { params }: Params) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_req: Request, { params }: Params) {
+/**
+ * DELETE /api/accounts/[username]
+ *
+ *   default        → SOFT delete: sets deleted_at = now(). Daily cron hard-deletes
+ *                    accounts whose deleted_at is older than 30 days.
+ *   ?hard=1        → HARD delete immediately. Cascades wipe videos, snapshots, runs.
+ *   ?restore=1     → undelete (clears deleted_at).
+ */
+export async function DELETE(req: Request, { params }: Params) {
   const sb = getServerSupabase();
   const username = clean(params.username);
+  const { searchParams } = new URL(req.url);
+  const hard = searchParams.get("hard") === "1";
+  const restore = searchParams.get("restore") === "1";
+
+  if (restore) {
+    const { error } = await sb
+      .from("accounts")
+      .update({ deleted_at: null })
+      .eq("username", username);
+    if (error)
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, restored: true });
+  }
+
+  if (hard) {
+    const { error } = await sb
+      .from("accounts")
+      .delete()
+      .eq("username", username);
+    if (error)
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, hard: true });
+  }
+
+  // Soft delete: keep data for 30 days so we can restore if needed.
   const { error } = await sb
     .from("accounts")
-    .delete()
+    .update({ deleted_at: new Date().toISOString(), is_pinned: false })
     .eq("username", username);
   if (error)
     return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    soft: true,
+    note: "Datos retenidos 30 días. Usa ?hard=1 para borrar ya, o ?restore=1 para recuperar.",
+  });
 }

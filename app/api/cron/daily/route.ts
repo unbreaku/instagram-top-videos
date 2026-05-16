@@ -7,9 +7,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// How many latest posts to fetch per pinned account daily.
-// Small enough to fit within Vercel Hobby's 60s function timeout.
-const DAILY_POSTS_PER_ACCOUNT = 30;
+// How many latest posts to fetch per pinned account daily. Kept small to
+// minimize Apify spend; manual "Refrescar histórico completo" exists in the UI
+// for full re-scrapes.
+const DAILY_POSTS_PER_ACCOUNT = 10;
+
+// Soft-deleted accounts older than this get hard-deleted by the cron.
+const SOFT_DELETE_RETENTION_DAYS = 30;
 
 /**
  * Vercel cron entrypoint. Configured in vercel.json to run once daily.
@@ -27,10 +31,22 @@ export async function GET(req: Request) {
   }
 
   const sb = getServerSupabase();
+  // Hard-delete soft-deleted accounts older than retention window. Cascades
+  // handle videos/snapshots/runs automatically.
+  const cutoff = new Date(
+    Date.now() - SOFT_DELETE_RETENTION_DAYS * 86400 * 1000,
+  ).toISOString();
+  const { data: purged } = await sb
+    .from("accounts")
+    .delete()
+    .lt("deleted_at", cutoff)
+    .select("username");
+
   const { data: pinned } = await sb
     .from("accounts")
     .select("username")
-    .eq("is_pinned", true);
+    .eq("is_pinned", true)
+    .is("deleted_at", null);
 
   const results: Array<{
     username: string;
@@ -61,6 +77,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     ran_at: new Date().toISOString(),
+    purged_accounts: (purged || []).map((p) => p.username),
     results,
   });
 }
