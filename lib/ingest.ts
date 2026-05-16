@@ -77,6 +77,9 @@ export async function ingestApifyItems(
       caption: (item.caption || "").trim() || null,
       posted_at: item.timestamp || null,
       url,
+      // Direct CDN URL to the mp4 file, used by the transcription pipeline.
+      // It expires after ~1h, so we re-store it on every ingest.
+      video_url: item.videoUrl || null,
       thumbnail_url: item.displayUrl || null,
       duration_seconds:
         typeof item.videoDuration === "number"

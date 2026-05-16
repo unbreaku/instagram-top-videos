@@ -23,6 +23,10 @@ interface Video {
   latest_views: number | null;
   latest_likes: number | null;
   latest_comments: number | null;
+  hook: string | null;
+  cta: string | null;
+  format_tags: string[] | null;
+  analyzed_at: string | null;
 }
 
 interface Snapshot {
@@ -72,6 +76,8 @@ export default function AccountPage({
   const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>("views");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,20 +179,56 @@ export default function AccountPage({
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
             Videos
           </h2>
-          <label className="text-sm text-zinc-600">
-            Ordenar por&nbsp;
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-              className="rounded-md border border-zinc-300 px-2 py-1 text-sm"
+          <div className="flex items-center gap-3">
+            <button
+              onClick={async () => {
+                setAnalyzing(true);
+                setAnalyzeMsg("Analizando lote de 5…");
+                try {
+                  const r = await fetch(
+                    `/api/analyze-pending?account=${params.username}&batch=5`,
+                    { method: "POST" },
+                  );
+                  const j = await r.json();
+                  setAnalyzeMsg(
+                    `Procesados ${j.processed}, quedan ${j.remaining ?? "?"} por analizar.`,
+                  );
+                  // Refresh table
+                  const vRes = await fetch(
+                    `/api/accounts/${params.username}/videos?sort=${sort}&limit=500`,
+                  );
+                  setVideos((await vRes.json()).videos || []);
+                } catch (e) {
+                  setAnalyzeMsg(`Error: ${e instanceof Error ? e.message : e}`);
+                } finally {
+                  setAnalyzing(false);
+                }
+              }}
+              disabled={analyzing}
+              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50 disabled:opacity-50"
             >
-              <option value="views">Vistas</option>
-              <option value="likes">Likes</option>
-              <option value="comments">Comentarios</option>
-              <option value="posted">Fecha</option>
-            </select>
-          </label>
+              {analyzing ? "Analizando…" : "Analizar pendientes"}
+            </button>
+            <label className="text-sm text-zinc-600">
+              Ordenar por&nbsp;
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortKey)}
+                className="rounded-md border border-zinc-300 px-2 py-1 text-sm"
+              >
+                <option value="views">Vistas</option>
+                <option value="likes">Likes</option>
+                <option value="comments">Comentarios</option>
+                <option value="posted">Fecha</option>
+              </select>
+            </label>
+          </div>
         </div>
+        {analyzeMsg && (
+          <div className="mb-3 rounded-md border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-700">
+            {analyzeMsg}
+          </div>
+        )}
 
         {videos.length === 0 ? (
           <div className="rounded-xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600">
@@ -233,7 +275,31 @@ export default function AccountPage({
                       className="max-w-md px-3 py-2 text-zinc-700"
                       title={v.caption || ""}
                     >
-                      {truncate(v.caption || "")}
+                      {v.hook && (
+                        <div className="mb-1 text-xs font-semibold text-zinc-900">
+                          🎣 {v.hook}
+                        </div>
+                      )}
+                      <div className="text-zinc-700">
+                        {truncate(v.caption || "")}
+                      </div>
+                      {v.cta && (
+                        <div className="mt-1 text-xs italic text-zinc-600">
+                          → {v.cta}
+                        </div>
+                      )}
+                      {v.format_tags && v.format_tags.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {v.format_tags.map((t) => (
+                            <span
+                              key={t}
+                              className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600"
+                            >
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       <a

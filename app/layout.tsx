@@ -31,6 +31,9 @@ export default function RootLayout({
               <Link href="/accounts" className="hover:text-zinc-900">
                 Cuentas
               </Link>
+              <Link href="/formats" className="hover:text-zinc-900">
+                Formatos
+              </Link>
             </nav>
           </div>
         </header>

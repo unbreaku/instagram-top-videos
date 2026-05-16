@@ -28,7 +28,7 @@ export async function GET(req: Request, { params }: Params) {
   const { data, error } = await sb
     .from("videos")
     .select(
-      "shortcode, account_username, type, caption, posted_at, url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook",
+      "shortcode, account_username, type, caption, posted_at, url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook, format_tags, analyzed_at",
     )
     .eq("account_username", username)
     .order(col, order)
