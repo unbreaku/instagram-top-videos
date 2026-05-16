@@ -316,7 +316,30 @@ export default function AccountPage({
           )}
         </div>
         <div className="text-right text-sm text-zinc-500">
-          {videos.length} posts en DB
+          {(() => {
+            const lastSnap = [...detail.snapshots]
+              .filter((s) => typeof s.posts_count === "number")
+              .sort((a, b) => b.captured_at.localeCompare(a.captured_at))[0];
+            const ig = lastSnap?.posts_count ?? null;
+            if (ig != null) {
+              return (
+                <>
+                  <div className="text-base font-semibold text-zinc-900">
+                    {fmt(ig)} posts (IG)
+                  </div>
+                  {videos.length < ig && (
+                    <div
+                      className="text-[11px] text-zinc-400"
+                      title="Diferencia por techo de paginación del actor o posts archivados/fijados que IG cuenta pero no devuelve en su feed pública."
+                    >
+                      {fmt(videos.length)} en BD
+                    </div>
+                  )}
+                </>
+              );
+            }
+            return <>{fmt(videos.length)} posts en BD</>;
+          })()}
         </div>
       </header>
 

@@ -6,6 +6,8 @@ interface Account {
   username: string;
   is_pinned: boolean;
   video_count: number;
+  posts_count: number | null;
+  posts_in_db: number;
   followers_latest: number | null;
   profile_pic_url?: string | null;
   display_name?: string | null;
@@ -402,8 +404,21 @@ export default function AccountsPage() {
             )}
             <div className="flex-1">
               <div className="font-medium">@{a.username}</div>
-              <div className="text-xs text-zinc-500">
-                {a.video_count} posts · {fmt(a.followers_latest)} followers
+              <div
+                className="text-xs text-zinc-500"
+                title={
+                  a.posts_count != null && a.posts_in_db < a.posts_count
+                    ? `Instagram reporta ${a.posts_count} posts. Tenemos ${a.posts_in_db} en BD (gap por techo del scraper).`
+                    : undefined
+                }
+              >
+                {fmt(a.posts_count ?? a.posts_in_db)} posts (IG)
+                {a.posts_count != null && a.posts_in_db < a.posts_count && (
+                  <span className="ml-1 text-zinc-400">
+                    · {a.posts_in_db} en BD
+                  </span>
+                )}{" "}
+                · {fmt(a.followers_latest)} followers
               </div>
             </div>
 

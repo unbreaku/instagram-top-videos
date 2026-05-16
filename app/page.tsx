@@ -8,7 +8,11 @@ interface Account {
   display_name: string | null;
   is_pinned: boolean;
   last_full_scrape_at: string | null;
-  video_count: number;
+  // posts_count = what Instagram reports on the profile (truth)
+  // posts_in_db = what we managed to scrape via Apify (subject to pagination cap)
+  posts_count: number | null;
+  posts_in_db: number;
+  video_count: number; // alias of posts_in_db, kept for compatibility
   followers_latest: number | null;
   profile_pic_url: string | null;
 }
@@ -182,11 +186,19 @@ function AccountGrid({ accounts }: { accounts: Account[] }) {
             </div>
             <div>
               <dt className="text-xs uppercase tracking-wide text-zinc-500">
-                Posts
+                Posts (IG)
               </dt>
               <dd className="font-medium tabular-nums">
-                {fmt(a.video_count)}
+                {fmt(a.posts_count)}
               </dd>
+              {a.posts_count != null && a.posts_in_db < a.posts_count && (
+                <dd
+                  className="text-[10px] text-zinc-400"
+                  title={`Tenemos ${a.posts_in_db} de ${a.posts_count} en BD. Falta es por techo de paginación del actor de Apify o posts archivados/fijados.`}
+                >
+                  {fmt(a.posts_in_db)} en BD
+                </dd>
+              )}
             </div>
           </dl>
           <p className="mt-3 text-xs text-zinc-500">

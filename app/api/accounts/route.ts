@@ -37,24 +37,40 @@ export async function GET(req: Request) {
       usernames.map((u) =>
         sb
           .from("account_snapshots")
-          .select("captured_at, followers_count")
+          .select("captured_at, followers_count, posts_count")
           .eq("account_username", u)
           .order("captured_at", { ascending: false })
           .limit(1)
           .maybeSingle()
-          .then(({ data }) => ({ u, followers: data?.followers_count ?? null })),
+          .then(({ data }) => ({
+            u,
+            followers: data?.followers_count ?? null,
+            posts_ig: data?.posts_count ?? null,
+          })),
       ),
     ),
   ]);
   const countMap = new Map(videoCounts.map((c) => [c.u, c.count]));
-  const followerMap = new Map(latestSnaps.map((s) => [s.u, s.followers]));
+  const snapMap = new Map(
+    latestSnaps.map((s) => [s.u, { followers: s.followers, posts_ig: s.posts_ig }]),
+  );
 
   return NextResponse.json({
-    accounts: (accounts || []).map((a) => ({
-      ...a,
-      video_count: countMap.get(a.username) ?? 0,
-      followers_latest: followerMap.get(a.username) ?? null,
-    })),
+    accounts: (accounts || []).map((a) => {
+      const snap = snapMap.get(a.username);
+      const inDb = countMap.get(a.username) ?? 0;
+      return {
+        ...a,
+        // posts_count is what Instagram itself reports on the profile header.
+        // posts_in_db is what Apify managed to actually fetch — bounded by the
+        // public-API pagination cap.
+        posts_count: snap?.posts_ig ?? null,
+        posts_in_db: inDb,
+        // Kept for backward compatibility with old callers.
+        video_count: inDb,
+        followers_latest: snap?.followers ?? null,
+      };
+    }),
   });
 }
 
