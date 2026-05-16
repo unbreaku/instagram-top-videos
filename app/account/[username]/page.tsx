@@ -324,6 +324,7 @@ export default function AccountPage({
         videos={videos}
         snapshots={detail.snapshots}
         chartData={chartData}
+        totalInDb={videos.length}
       />
 
 
@@ -836,10 +837,12 @@ function Stats90d({
   videos,
   snapshots,
   chartData,
+  totalInDb,
 }: {
   videos: Video[];
   snapshots: Snapshot[];
   chartData: Array<{ date: string; followers: number | null }>;
+  totalInDb: number;
 }) {
   const cutoff = Date.now() - 90 * 86400 * 1000;
   const inWindow = videos.filter((v) => {
@@ -878,6 +881,13 @@ function Stats90d({
       (inWindowSnaps[0].followers_count || 0);
   }
 
+  // Most recent snapshot's posts_count reflects what Instagram itself reports
+  // on the profile header (includes archived/pinned items some scrapers miss).
+  const lastSnap = snaps[snaps.length - 1];
+  const igPostsCount = lastSnap?.posts_count ?? null;
+  const gap =
+    typeof igPostsCount === "number" ? igPostsCount - totalInDb : null;
+
   return (
     <section className="mb-10 grid gap-6 lg:grid-cols-3">
       {chartData.length > 1 ? (
@@ -914,18 +924,58 @@ function Stats90d({
       )}
 
       <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+        <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-zinc-500">
           Últimos 90 días
         </h2>
+        <p className="mb-3 text-[10px] text-zinc-500">
+          Pasa el cursor sobre cada label para ver cómo se calcula.
+        </p>
         <dl className="grid grid-cols-2 gap-3 text-sm">
-          <Stat90 label="Posts" value={fmt(inWindow.length)} />
-          <Stat90 label="Posts / día" value={postsPerDay.toFixed(1)} />
-          <Stat90 label="Δ Followers" value={followerDelta == null ? "—" : `${followerDelta > 0 ? "+" : ""}${fmt(followerDelta)}`} positive={followerDelta != null ? followerDelta > 0 : undefined} />
-          <Stat90 label="Engagement" value={`${engagementRate.toFixed(2)}%`} />
-          <Stat90 label="Vistas totales" value={fmt(totalViews)} />
-          <Stat90 label="Vistas / post" value={fmt(Math.round(avgViews))} />
-          <Stat90 label="Likes totales" value={fmt(totalLikes)} />
-          <Stat90 label="Likes / post" value={fmt(Math.round(avgLikes))} />
+          <Stat90
+            label="Posts"
+            value={fmt(inWindow.length)}
+            help="Cantidad de posts publicados en los últimos 90 días (cuenta videos + fotos + carruseles)."
+          />
+          <Stat90
+            label="Posts / día"
+            value={postsPerDay.toFixed(1)}
+            help="Posts en el período ÷ 90. Indica frecuencia de publicación."
+          />
+          <Stat90
+            label="Δ Followers"
+            value={
+              followerDelta == null
+                ? "—"
+                : `${followerDelta > 0 ? "+" : ""}${fmt(followerDelta)}`
+            }
+            positive={followerDelta != null ? followerDelta > 0 : undefined}
+            help="Diferencia entre el primer y último snapshot de followers dentro del período. Necesitas que el cron diario haya corrido al menos 2 días."
+          />
+          <Stat90
+            label="Engagement"
+            value={`${engagementRate.toFixed(2)}%`}
+            help="(likes + comments) ÷ vistas, sumado sobre todos los posts del período. Solo entran los que tienen vistas registradas (las fotos suelen no tener)."
+          />
+          <Stat90
+            label="Vistas totales"
+            value={fmt(totalViews)}
+            help="Suma de vistas de todos los posts del período, medidas a la fecha de hoy (los posts viejos siguen acumulando, así que sube con el tiempo)."
+          />
+          <Stat90
+            label="Vistas / post"
+            value={fmt(Math.round(avgViews))}
+            help="Promedio simple de vistas por post del período. Útil para benchmark de performance."
+          />
+          <Stat90
+            label="Likes totales"
+            value={fmt(totalLikes)}
+            help="Suma de likes de todos los posts del período."
+          />
+          <Stat90
+            label="Likes / post"
+            value={fmt(Math.round(avgLikes))}
+            help="Promedio simple de likes por post del período."
+          />
         </dl>
         {topPost && (
           <div className="mt-3 border-t border-zinc-100 pt-3 text-xs">
@@ -944,6 +994,54 @@ function Stats90d({
             </div>
           </div>
         )}
+        {gap != null && gap > 0 && (
+          <div
+            className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900"
+            title={`Instagram reporta ${igPostsCount} posts pero Apify devolvió solo ${totalInDb}. La diferencia (${gap}) suelen ser posts archivados, fijados (pinned), o más allá del techo de paginación del actor.`}
+          >
+            <strong>Faltan {gap} posts vs IG:</strong> tenemos {totalInDb} pero
+            Instagram reporta {igPostsCount}. Suelen ser archivados, pinned, o
+            posts antiguos más allá del techo del scraper.
+          </div>
+        )}
+        <details className="mt-3 text-xs">
+          <summary className="cursor-pointer text-zinc-500 hover:text-zinc-800">
+            ⓘ Cómo se calculan estas métricas
+          </summary>
+          <div className="mt-2 space-y-2 rounded-md bg-zinc-50 p-3 text-zinc-700">
+            <p>
+              <strong>Período:</strong> ahora menos 90 días. Posts más viejos no
+              entran.
+            </p>
+            <p>
+              <strong>Δ Followers:</strong> solo se calcula con snapshots
+              capturados por el cron diario. El primer día tienes una sola
+              captura, no se puede medir delta hasta que pase el segundo cron.
+            </p>
+            <p>
+              <strong>Δ Followers atribuible a cada post (en la tabla
+              abajo):</strong>{" "}
+              por cada ventana entre dos snapshots consecutivos del cron, tomo
+              el cambio de followers (ej. +200 en 24h) y lo distribuyo entre
+              los posts publicados en esa ventana ponderado por vistas. Si un
+              post se llevó el 80% de las vistas, recibe 80% del crédito.{" "}
+              <em>
+                Esto es una heurística: Instagram no expone qué post causó
+                cada nuevo seguidor.
+              </em>{" "}
+              Los posts publicados ANTES del primer snapshot no tienen
+              atribución (—).
+            </p>
+            <p>
+              <strong>Por qué pueden faltar posts vs IG:</strong> el actor
+              público de Apify capta hasta ~600 posts por cuenta por límites
+              de paginación de Instagram. Para cuentas grandes (700+ posts)
+              vas a tener un gap permanente. Para cuentas chicas (1–5 posts
+              de diferencia) suele ser por posts archivados o fijados que IG
+              cuenta pero no devuelve en su feed pública.
+            </p>
+          </div>
+        </details>
       </div>
     </section>
   );
@@ -953,10 +1051,12 @@ function Stat90({
   label,
   value,
   positive,
+  help,
 }: {
   label: string;
   value: string;
   positive?: boolean;
+  help?: string;
 }) {
   const color =
     positive === true
@@ -965,9 +1065,14 @@ function Stat90({
         ? "text-red-700"
         : "text-zinc-900";
   return (
-    <div className="rounded-md bg-zinc-50 p-2">
-      <div className="text-[10px] uppercase tracking-wide text-zinc-500">
-        {label}
+    <div className="rounded-md bg-zinc-50 p-2" title={help}>
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-500">
+        <span>{label}</span>
+        {help && (
+          <span className="cursor-help text-zinc-400" aria-label={help}>
+            ⓘ
+          </span>
+        )}
       </div>
       <div className={`font-semibold tabular-nums ${color}`}>{value}</div>
     </div>
