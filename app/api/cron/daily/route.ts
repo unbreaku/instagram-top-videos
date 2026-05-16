@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server";
 import { runSync } from "@/lib/apify";
 import { ingestApifyItems } from "@/lib/ingest";
+import { analyzeOneVideo } from "@/lib/analyze";
 import { getServerSupabase } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// How many backlog videos to analyze per cron run, per account. Small enough
+// to fit within the function timeout (~5s each = ~30s for 6 videos), big
+// enough that we eventually catch up on a couple thousand videos over weeks.
+const ANALYZE_BACKFILL_PER_ACCOUNT = 6;
+const ANALYZE_MIN_VIEWS = 5000;
 
 // How many latest posts to fetch per pinned account daily. Kept small to
 // minimize Apify spend; manual "Refrescar histórico completo" exists in the UI
@@ -75,9 +82,45 @@ export async function GET(req: Request) {
     }
   }
 
+  // Backlog analysis: process a small batch of unanalyzed top videos per
+  // pinned account so the corpus eventually gets fully transcribed without
+  // the user having to click anything. Time-boxed to fit the function budget.
+  const analyzeResults: Array<{
+    username: string;
+    processed: number;
+    skipped: number;
+    failed: number;
+  }> = [];
+  const deadline = Date.now() + 45_000;
+  for (const { username } of pinned || []) {
+    if (Date.now() > deadline) break;
+    let processed = 0;
+    let skipped = 0;
+    let failed = 0;
+    const { data: candidates } = await sb
+      .from("videos")
+      .select("shortcode")
+      .eq("account_username", username)
+      .is("analyzed_at", null)
+      .lt("analyze_attempts", 3)
+      .not("video_url", "is", null)
+      .gte("latest_views", ANALYZE_MIN_VIEWS)
+      .order("latest_views", { ascending: false, nullsFirst: false })
+      .limit(ANALYZE_BACKFILL_PER_ACCOUNT);
+    for (const c of candidates || []) {
+      if (Date.now() > deadline) break;
+      const r = await analyzeOneVideo(c.shortcode);
+      if (r.ok && !r.skipped) processed++;
+      else if (r.skipped) skipped++;
+      else failed++;
+    }
+    analyzeResults.push({ username, processed, skipped, failed });
+  }
+
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     purged_accounts: (purged || []).map((p) => p.username),
-    results,
+    refresh: results,
+    analyze: analyzeResults,
   });
 }

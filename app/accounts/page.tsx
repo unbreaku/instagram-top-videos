@@ -456,6 +456,22 @@ export default function AccountsPage() {
                   >
                     Re-scrape histórico + re-analizar
                   </button>
+                  <button
+                    onClick={async () => {
+                      setOpenMenu(null);
+                      setBusyAction(`analyze-${a.username}`);
+                      setMsg(
+                        `Analizando backlog de @${a.username}… esto puede tardar minutos según cuántos quedan.`,
+                      );
+                      await analyzeLoop(a.username);
+                      setBusyAction(null);
+                      setMsg(progress || "Análisis completado");
+                      refresh();
+                    }}
+                    className="block w-full px-4 py-2 text-left text-sm hover:bg-zinc-50"
+                  >
+                    Continuar analizando pendientes
+                  </button>
                   <div className="border-t border-zinc-100" />
                   <button
                     onClick={() => softDelete(a.username)}

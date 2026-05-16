@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
+import { scoreLabel, scoreVideoForCopy, type ScoreBreakdown } from "@/lib/recommend";
 import {
   CartesianGrid,
   Line,
@@ -85,7 +86,13 @@ function truncate(s: string, n = 100): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-type SortKey = "views" | "likes" | "comments" | "posted" | "estimated_followers";
+type SortKey =
+  | "views"
+  | "likes"
+  | "comments"
+  | "posted"
+  | "estimated_followers"
+  | "score";
 
 const TYPE_OPTIONS = ["Todos", "Reel", "Video", "IGTV", "Image", "Sidecar", "Other"];
 
@@ -100,6 +107,7 @@ interface FilterState {
   tags: string[]; // multi-select
   onlyAnalyzed: boolean;
   onlyWithVideo: boolean; // hide images / sidecars
+  bestToCopy: boolean; // show only score >= 55 ("Recomendado" or better)
 }
 
 const EMPTY_FILTERS: FilterState = {
@@ -113,6 +121,7 @@ const EMPTY_FILTERS: FilterState = {
   tags: [],
   onlyAnalyzed: false,
   onlyWithVideo: false,
+  bestToCopy: false,
 };
 
 export default function AccountPage({
@@ -130,6 +139,8 @@ export default function AccountPage({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
+  // Format tags that appear in 2+ creators — strong template signal.
+  const [sharedTags, setSharedTags] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -147,6 +158,20 @@ export default function AccountPage({
       setVideos(v.videos || []);
       setLifts(l.lifts || []);
       setLoading(false);
+
+      // Fire-and-forget the formats fetch to know which tags are shared across
+      // creators. Used by the Best-to-Copy scorer.
+      fetch("/api/formats")
+        .then((r) => r.json())
+        .then((j) => {
+          if (cancelled) return;
+          const set = new Set<string>();
+          (j.shared_tags || []).forEach((t: { tag: string }) =>
+            set.add(t.tag),
+          );
+          setSharedTags(set);
+        })
+        .catch(() => {});
     })();
     return () => {
       cancelled = true;
@@ -170,6 +195,20 @@ export default function AccountPage({
     for (const v of videos) (v.format_tags || []).forEach((t) => set.add(t));
     return [...set].sort();
   }, [videos]);
+
+  // Pre-compute the Best-to-Copy score for every video — used both for sort
+  // and for the dedicated column.
+  const maxAccountViews = useMemo(
+    () => Math.max(0, ...videos.map((v) => v.latest_views || 0)),
+    [videos],
+  );
+  const scores = useMemo(() => {
+    const m = new Map<string, ScoreBreakdown>();
+    for (const v of videos) {
+      m.set(v.shortcode, scoreVideoForCopy(v, maxAccountViews, sharedTags));
+    }
+    return m;
+  }, [videos, maxAccountViews, sharedTags]);
 
   const filtered = useMemo(() => {
     const sLower = filters.search.toLowerCase().trim();
@@ -200,6 +239,10 @@ export default function AccountPage({
         const vt = new Set(v.format_tags || []);
         if (!filters.tags.every((t) => vt.has(t))) return false;
       }
+      if (filters.bestToCopy) {
+        const s = scores.get(v.shortcode);
+        if (!s || s.total < 55) return false;
+      }
       if (sLower) {
         const hay = [
           v.caption,
@@ -214,7 +257,7 @@ export default function AccountPage({
       }
       return true;
     });
-  }, [videos, filters]);
+  }, [videos, filters, scores]);
 
   const sorted = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -238,6 +281,10 @@ export default function AccountPage({
           av = a.estimated_followers ?? -Infinity;
           bv = b.estimated_followers ?? -Infinity;
           break;
+        case "score":
+          av = scores.get(a.shortcode)?.total ?? -Infinity;
+          bv = scores.get(b.shortcode)?.total ?? -Infinity;
+          break;
         case "views":
         default:
           av = a.latest_views || 0;
@@ -246,7 +293,7 @@ export default function AccountPage({
       return (av - bv) * dir;
     });
     return arr;
-  }, [filtered, sort, sortDir]);
+  }, [filtered, sort, sortDir, scores]);
 
   function toggleSort(k: SortKey) {
     if (sort === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -558,6 +605,25 @@ export default function AccountPage({
               />
               <span>Solo videos (excluye fotos)</span>
             </label>
+            <label
+              className="inline-flex items-center gap-2 rounded bg-amber-50 px-1.5 py-0.5"
+              title="Muestra solo posts con score ≥ 55: performance arriba del promedio + análisis completo (transcript+hook+CTA) + formato validado por otras cuentas."
+            >
+              <input
+                type="checkbox"
+                checked={filters.bestToCopy}
+                onChange={(e) => {
+                  setFilters({ ...filters, bestToCopy: e.target.checked });
+                  if (e.target.checked) {
+                    setSort("score");
+                    setSortDir("desc");
+                  }
+                }}
+              />
+              <span className="font-medium text-amber-900">
+                🏆 Best to copy (recomendados)
+              </span>
+            </label>
           </div>
           {allTags.length > 0 && (
             <div className="col-span-full" data-tag-dropdown>
@@ -718,6 +784,14 @@ export default function AccountPage({
                     onClick={toggleSort}
                     align="right"
                   />
+                  <Th
+                    label="Score copy"
+                    k="score"
+                    sortKey={sort}
+                    dir={sortDir}
+                    onClick={toggleSort}
+                    align="right"
+                  />
                   <th className="px-3 py-2">Análisis / Caption</th>
                   <th className="px-3 py-2">Link</th>
                 </tr>
@@ -758,6 +832,31 @@ export default function AccountPage({
                           {v.estimated_followers == null
                             ? "—"
                             : `${v.estimated_followers > 0 ? "+" : ""}${fmt(v.estimated_followers)}`}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {(() => {
+                            const s = scores.get(v.shortcode);
+                            if (!s) return <span className="text-zinc-400">—</span>;
+                            const lbl = scoreLabel(s.total);
+                            const tooltip = [
+                              `Score: ${s.total}/100`,
+                              `Performance: ${Math.round(s.performance * 100)}/100`,
+                              `Reproducibilidad: ${Math.round(s.reproducibility * 100)}/100`,
+                              `Validación cross-creator: ${Math.round(s.cross_creator * 100)}/100`,
+                              "",
+                              ...s.reasons.map((r) => `✓ ${r}`),
+                              ...s.warnings.map((w) => `⚠ ${w}`),
+                            ].join("\n");
+                            return (
+                              <span
+                                className={`inline-flex items-center gap-1 tabular-nums ${lbl.color}`}
+                                title={tooltip}
+                              >
+                                <span>{lbl.emoji}</span>
+                                <span className="font-semibold">{s.total}</span>
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td
                           className="max-w-md px-3 py-2 text-zinc-700"
@@ -816,7 +915,7 @@ export default function AccountPage({
                       </tr>
                       {isOpen && (
                         <tr className="bg-zinc-50">
-                          <td colSpan={8} className="px-3 py-4">
+                          <td colSpan={9} className="px-3 py-4">
                             <div className="space-y-3 text-sm">
                               {v.hook && (
                                 <Block label="Hook">{v.hook}</Block>
