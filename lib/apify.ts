@@ -93,8 +93,10 @@ export async function scrapeTopVideosForAccount(
     opts.apiToken,
   )}`;
 
+  // The actor expects `directUrls` pointing to profile pages.
+  // The legacy `username` field is no longer honored by the current build.
   const body = {
-    username: [cleanUsername],
+    directUrls: [`https://www.instagram.com/${cleanUsername}/`],
     resultsType: "posts",
     resultsLimit: opts.resultsLimit,
     addParentData: false,
