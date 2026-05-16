@@ -30,10 +30,92 @@ export interface ApifyInstagramItem {
   videoDuration?: number;
   isVideo?: boolean;
   videoUrl?: string;
-  // From parent profile data
+  // From parent profile data — the actor returns these under different paths
+  // depending on version. We accept all common shapes and unify them via
+  // extractProfileData() below.
   ownerFollowersCount?: number;
   ownerFollowingCount?: number;
   ownerPostsCount?: number;
+  // Some versions stick the profile data on a sub-object.
+  owner?: {
+    username?: string;
+    fullName?: string;
+    followersCount?: number;
+    followsCount?: number;
+    postsCount?: number;
+    biography?: string;
+  };
+  // Or on a parentData field (older shape, kept for safety).
+  parentData?: {
+    followersCount?: number;
+    followsCount?: number;
+    postsCount?: number;
+    fullName?: string;
+    biography?: string;
+  };
+  // Or just top-level (rare but seen on some scrapers).
+  followersCount?: number;
+  followsCount?: number;
+  postsCount?: number;
+  fullName?: string;
+  biography?: string;
+}
+
+/**
+ * Returns unified profile-level metrics for an item if present. Tries every
+ * known shape so the system survives Apify actor schema bumps.
+ */
+export function extractProfileData(item: ApifyInstagramItem): {
+  followersCount: number | null;
+  followingCount: number | null;
+  postsCount: number | null;
+  fullName: string | null;
+  biography: string | null;
+} | null {
+  const followers =
+    item.ownerFollowersCount ??
+    item.owner?.followersCount ??
+    item.parentData?.followersCount ??
+    item.followersCount ??
+    null;
+  const following =
+    item.ownerFollowingCount ??
+    item.owner?.followsCount ??
+    item.parentData?.followsCount ??
+    item.followsCount ??
+    null;
+  const posts =
+    item.ownerPostsCount ??
+    item.owner?.postsCount ??
+    item.parentData?.postsCount ??
+    item.postsCount ??
+    null;
+  const fullName =
+    item.ownerFullName ??
+    item.owner?.fullName ??
+    item.parentData?.fullName ??
+    item.fullName ??
+    null;
+  const biography =
+    item.owner?.biography ?? item.parentData?.biography ?? item.biography ?? null;
+
+  // If nothing was found, this item doesn't have profile data attached.
+  if (
+    followers === null &&
+    following === null &&
+    posts === null &&
+    fullName === null &&
+    biography === null
+  ) {
+    return null;
+  }
+  return {
+    followersCount: typeof followers === "number" ? followers : null,
+    followingCount: typeof following === "number" ? following : null,
+    postsCount: typeof posts === "number" ? posts : null,
+    fullName: typeof fullName === "string" ? fullName : null,
+    biography: typeof biography === "string" ? biography : null,
+  };
 }
 
 export function isVideoItem(item: ApifyInstagramItem): boolean {

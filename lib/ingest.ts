@@ -2,6 +2,7 @@ import { getServerSupabase } from "./supabase";
 import {
   ApifyInstagramItem,
   classifyType,
+  extractProfileData,
   extractViews,
   isVideoItem,
 } from "./apify";
@@ -30,24 +31,32 @@ export async function ingestApifyItems(
   const now = new Date().toISOString();
 
   // ---------- profile snapshot ----------
-  const profileItem = items.find(
-    (it) =>
-      typeof it.ownerFollowersCount === "number" ||
-      typeof it.ownerPostsCount === "number",
-  );
+  // Profile fields come back attached to each post when addParentData=true,
+  // but the Apify actor has changed which path holds them across versions
+  // (ownerFollowersCount / owner.followersCount / parentData.followersCount).
+  // extractProfileData walks all known shapes; we take the first item with
+  // any of them populated.
+  let profile: ReturnType<typeof extractProfileData> = null;
+  for (const it of items) {
+    const p = extractProfileData(it);
+    if (p) {
+      profile = p;
+      break;
+    }
+  }
 
-  if (profileItem) {
-    if (profileItem.ownerFullName) {
-      await sb
-        .from("accounts")
-        .update({ display_name: profileItem.ownerFullName })
-        .eq("username", cleanUsername);
+  if (profile) {
+    const update: Record<string, unknown> = {};
+    if (profile.fullName) update.display_name = profile.fullName;
+    if (profile.biography) update.bio = profile.biography;
+    if (Object.keys(update).length > 0) {
+      await sb.from("accounts").update(update).eq("username", cleanUsername);
     }
     await sb.from("account_snapshots").insert({
       account_username: cleanUsername,
-      followers_count: profileItem.ownerFollowersCount ?? null,
-      following_count: profileItem.ownerFollowingCount ?? null,
-      posts_count: profileItem.ownerPostsCount ?? null,
+      followers_count: profile.followersCount,
+      following_count: profile.followingCount,
+      posts_count: profile.postsCount,
       videos_count: items.filter(isVideoItem).length,
     });
   }
