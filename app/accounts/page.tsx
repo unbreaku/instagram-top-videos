@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 interface Account {
   username: string;
@@ -8,6 +8,19 @@ interface Account {
   video_count: number;
   followers_latest: number | null;
   deleted_at?: string | null;
+}
+
+interface MigrationStatus {
+  name: string;
+  applied_at: string | null;
+  duration_ms: number | null;
+  applies_via: "manual" | "auto";
+}
+
+interface MigrationListResponse {
+  bootstrap_needed: boolean;
+  migrations: MigrationStatus[];
+  instructions?: string;
 }
 
 function fmt(n: number | null | undefined): string {
@@ -21,6 +34,9 @@ export default function AccountsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [migrations, setMigrations] = useState<MigrationListResponse | null>(
+    null,
+  );
 
   async function refresh() {
     const res = await fetch("/api/accounts");
@@ -28,8 +44,15 @@ export default function AccountsPage() {
     setAccounts(j.accounts || []);
   }
 
+  async function loadMigrations() {
+    const res = await fetch("/api/migrate");
+    const j = await res.json();
+    setMigrations(j);
+  }
+
   useEffect(() => {
     refresh();
+    loadMigrations();
   }, []);
 
   // Close menus when clicking outside.
@@ -129,6 +152,34 @@ export default function AccountsPage() {
     if (!res.ok) setMsg(`Error: ${j.error || res.status}`);
     else setMsg(`@${u} borrada (retención 30 días).`);
     refresh();
+  }
+
+  async function applyMigrations() {
+    setBusy("migrate");
+    setMsg("Aplicando migraciones pendientes…");
+    const res = await fetch("/api/migrate", { method: "POST" });
+    const j = await res.json();
+    setBusy(null);
+    if (!res.ok) {
+      setMsg(`Error en migración: ${j.error || res.status}`);
+    } else {
+      const applied = (j.results || []).filter(
+        (r: { status: string }) => r.status === "applied",
+      );
+      const failed = (j.results || []).filter(
+        (r: { status: string }) => r.status === "failed",
+      );
+      if (failed.length > 0) {
+        setMsg(
+          `Migración falló en: ${failed.map((f: { name: string; error?: string }) => `${f.name} (${f.error || "?"})`).join(", ")}`,
+        );
+      } else if (applied.length === 0) {
+        setMsg("Sin migraciones pendientes. Schema al día.");
+      } else {
+        setMsg(`Aplicadas: ${applied.map((a: { name: string }) => a.name).join(", ")}`);
+      }
+    }
+    loadMigrations();
   }
 
   async function hardDelete(u: string) {
@@ -258,6 +309,52 @@ export default function AccountsPage() {
           </li>
         )}
       </ul>
+
+      {migrations && (
+        <section className="mt-12">
+          <details className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-zinc-500">
+              Schema · {migrations.migrations.filter((m) => !m.applied_at && m.applies_via === "auto").length}{" "}
+              pendientes
+            </summary>
+            <div className="mt-4">
+              {migrations.bootstrap_needed ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <strong>Setup inicial requerido.</strong>{" "}
+                  {migrations.instructions || ""}
+                </div>
+              ) : (
+                <button
+                  onClick={applyMigrations}
+                  disabled={busy === "migrate"}
+                  className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  {busy === "migrate"
+                    ? "Aplicando…"
+                    : "Aplicar migraciones pendientes"}
+                </button>
+              )}
+              <ul className="mt-4 divide-y divide-zinc-100 text-sm">
+                {migrations.migrations.map((m) => (
+                  <li
+                    key={m.name}
+                    className="flex items-center justify-between py-2"
+                  >
+                    <span className="font-mono text-zinc-700">{m.name}</span>
+                    <span className="text-xs text-zinc-500">
+                      {m.applies_via === "manual" && !m.applied_at
+                        ? "manual (bootstrap)"
+                        : m.applied_at
+                          ? `aplicada ${new Date(m.applied_at).toLocaleString("es-CO")}${m.duration_ms ? ` · ${m.duration_ms}ms` : ""}`
+                          : "pendiente"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </details>
+        </section>
+      )}
     </main>
   );
 }
