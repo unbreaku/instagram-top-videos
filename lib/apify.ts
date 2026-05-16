@@ -1,13 +1,21 @@
-import type { VideoRow } from "./types";
+/**
+ * Wrapper around Apify's `apify/instagram-scraper` actor.
+ *
+ * Two modes:
+ *   - sync: run-sync-get-dataset-items — single round-trip, blocks until the
+ *     actor finishes. Capped by Vercel function timeout (60s on Hobby).
+ *     Good for small jobs (cron daily, fetching latest N posts).
+ *   - async: starts a run, returns immediately with run_id, datasetId.
+ *     Use polling (`getRunStatus`) or webhooks to know when it's done.
+ *     Required for full-history scrapes that may take minutes.
+ */
 
 const APIFY_ACTOR = "apify~instagram-scraper";
 const APIFY_BASE = "https://api.apify.com/v2";
 
-// Shape of items returned by the apify/instagram-scraper actor (subset we care about).
-// See: https://apify.com/apify/instagram-scraper
-interface ApifyInstagramItem {
+export interface ApifyInstagramItem {
   type?: string;
-  productType?: string; // "clips" = Reel, "feed" = post
+  productType?: string;
   shortCode?: string;
   caption?: string;
   url?: string;
@@ -17,117 +25,162 @@ interface ApifyInstagramItem {
   videoPlayCount?: number;
   timestamp?: string;
   ownerUsername?: string;
+  ownerFullName?: string;
   displayUrl?: string;
   videoDuration?: number;
   isVideo?: boolean;
+  videoUrl?: string;
+  // From parent profile data
+  ownerFollowersCount?: number;
+  ownerFollowingCount?: number;
+  ownerPostsCount?: number;
 }
 
-function classifyType(item: ApifyInstagramItem): VideoRow["type"] {
-  const pt = (item.productType || "").toLowerCase();
-  if (pt === "clips") return "Reel";
-  if (pt === "igtv") return "IGTV";
-  const t = (item.type || "").toLowerCase();
-  if (t === "video") return "Video";
-  return "Other";
-}
-
-function isVideoItem(item: ApifyInstagramItem): boolean {
+export function isVideoItem(item: ApifyInstagramItem): boolean {
   if (item.isVideo === true) return true;
   if ((item.type || "").toLowerCase() === "video") return true;
   const pt = (item.productType || "").toLowerCase();
   if (pt === "clips" || pt === "igtv") return true;
-  // Some reels come back with only videoPlayCount populated
-  if (typeof item.videoPlayCount === "number" && item.videoPlayCount > 0) return true;
-  if (typeof item.videoViewCount === "number" && item.videoViewCount > 0) return true;
+  if (typeof item.videoPlayCount === "number" && item.videoPlayCount > 0)
+    return true;
+  if (typeof item.videoViewCount === "number" && item.videoViewCount > 0)
+    return true;
+  if (item.videoUrl) return true;
   return false;
 }
 
-function extractViews(item: ApifyInstagramItem): number {
-  // Reels expose videoPlayCount; older video posts expose videoViewCount.
-  // We pick whichever is larger / available.
+export function classifyType(item: ApifyInstagramItem): string {
+  const pt = (item.productType || "").toLowerCase();
+  if (pt === "clips") return "Reel";
+  if (pt === "igtv") return "IGTV";
+  if ((item.type || "").toLowerCase() === "video") return "Video";
+  return "Other";
+}
+
+export function extractViews(item: ApifyInstagramItem): number {
   const v1 = typeof item.videoPlayCount === "number" ? item.videoPlayCount : 0;
   const v2 = typeof item.videoViewCount === "number" ? item.videoViewCount : 0;
   return Math.max(v1, v2);
 }
 
-function toRow(item: ApifyInstagramItem, fallbackUsername: string): VideoRow {
-  const shortCode = item.shortCode || "";
-  const url =
-    item.url ||
-    (shortCode ? `https://www.instagram.com/p/${shortCode}/` : "");
+function buildBody(
+  username: string,
+  resultsLimit: number,
+  includeProfileData: boolean,
+) {
+  const u = username.replace(/^@/, "").trim();
   return {
-    username: item.ownerUsername || fallbackUsername,
-    views: extractViews(item),
-    likes: item.likesCount ?? 0,
-    comments: item.commentsCount ?? 0,
-    caption: (item.caption || "").trim(),
-    url,
-    timestamp: item.timestamp || "",
-    thumbnailUrl: item.displayUrl,
-    durationSeconds:
-      typeof item.videoDuration === "number" ? item.videoDuration : undefined,
-    type: classifyType(item),
+    directUrls: [`https://www.instagram.com/${u}/`],
+    resultsType: "posts",
+    resultsLimit,
+    addParentData: includeProfileData,
   };
 }
 
-export interface ScrapeOptions {
-  topN: number;
-  resultsLimit: number; // how many posts to ask Apify for per account
-  apiToken: string;
+function token(): string {
+  const t = process.env.APIFY_API_TOKEN;
+  if (!t) throw new Error("APIFY_API_TOKEN is not set");
+  return t;
 }
 
 /**
- * Calls Apify's Instagram Scraper actor synchronously for one username and
- * returns the top N video posts ordered by view count (descending).
- *
- * Uses `run-sync-get-dataset-items` so we get the dataset back in one call.
+ * Synchronous run for small/fast scrapes. Returns dataset items.
+ * Will time out if the actor takes too long.
  */
-export async function scrapeTopVideosForAccount(
+export async function runSync(
   username: string,
-  opts: ScrapeOptions,
-): Promise<VideoRow[]> {
-  const cleanUsername = username.replace(/^@/, "").trim();
-  if (!cleanUsername) return [];
-
+  resultsLimit: number,
+  includeProfileData = false,
+): Promise<ApifyInstagramItem[]> {
   const url = `${APIFY_BASE}/acts/${APIFY_ACTOR}/run-sync-get-dataset-items?token=${encodeURIComponent(
-    opts.apiToken,
+    token(),
   )}`;
-
-  // The actor expects `directUrls` pointing to profile pages.
-  // The legacy `username` field is no longer honored by the current build.
-  const body = {
-    directUrls: [`https://www.instagram.com/${cleanUsername}/`],
-    resultsType: "posts",
-    resultsLimit: opts.resultsLimit,
-    addParentData: false,
-  };
-
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    // Apify can take a while; bump the timeout via Next.js route config.
+    body: JSON.stringify(buildBody(username, resultsLimit, includeProfileData)),
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Apify sync failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const items = (await res.json()) as ApifyInstagramItem[];
+  if (!Array.isArray(items)) throw new Error("Apify sync: not an array");
+  return items;
+}
 
+/**
+ * Starts an async run and returns the run + dataset IDs immediately.
+ */
+export async function startRun(
+  username: string,
+  resultsLimit: number,
+  includeProfileData = true,
+): Promise<{ runId: string; datasetId: string }> {
+  const url = `${APIFY_BASE}/acts/${APIFY_ACTOR}/runs?token=${encodeURIComponent(
+    token(),
+  )}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildBody(username, resultsLimit, includeProfileData)),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Apify start failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const j = (await res.json()) as {
+    data?: { id?: string; defaultDatasetId?: string };
+  };
+  const runId = j.data?.id;
+  const datasetId = j.data?.defaultDatasetId;
+  if (!runId || !datasetId)
+    throw new Error("Apify start: missing run/dataset ID");
+  return { runId, datasetId };
+}
+
+export interface RunStatus {
+  status:
+    | "READY"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "ABORTED"
+    | "TIMING-OUT"
+    | "TIMED-OUT"
+    | "ABORTING";
+  itemCount?: number;
+}
+
+export async function getRunStatus(runId: string): Promise<RunStatus> {
+  const url = `${APIFY_BASE}/actor-runs/${runId}?token=${encodeURIComponent(
+    token(),
+  )}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Apify status failed (${res.status})`);
+  const j = (await res.json()) as {
+    data?: { status?: RunStatus["status"]; stats?: { inputBodyLen?: number } };
+  };
+  return { status: j.data?.status || "RUNNING" };
+}
+
+/**
+ * Fetches all items from a finished run's dataset.
+ */
+export async function fetchDataset(
+  datasetId: string,
+): Promise<ApifyInstagramItem[]> {
+  const url = `${APIFY_BASE}/datasets/${datasetId}/items?token=${encodeURIComponent(
+    token(),
+  )}&format=json&clean=true`;
+  const res = await fetch(url);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(
-      `Apify request failed for @${cleanUsername} (${res.status}): ${text.slice(0, 300)}`,
+      `Apify dataset fetch failed (${res.status}): ${text.slice(0, 200)}`,
     );
   }
-
   const items = (await res.json()) as ApifyInstagramItem[];
-  if (!Array.isArray(items)) {
-    throw new Error(
-      `Unexpected Apify response for @${cleanUsername}: not an array`,
-    );
-  }
-
-  const videos = items
-    .filter(isVideoItem)
-    .map((item) => toRow(item, cleanUsername))
-    .sort((a, b) => b.views - a.views)
-    .slice(0, opts.topN);
-
-  return videos;
+  if (!Array.isArray(items)) throw new Error("Apify dataset: not an array");
+  return items;
 }
