@@ -7,6 +7,8 @@ interface Account {
   is_pinned: boolean;
   video_count: number;
   followers_latest: number | null;
+  profile_pic_url?: string | null;
+  display_name?: string | null;
   deleted_at?: string | null;
 }
 
@@ -23,17 +25,48 @@ interface MigrationListResponse {
   instructions?: string;
 }
 
+interface PreviewPost {
+  shortcode: string;
+  type: string | null;
+  posted_at: string | null;
+  thumbnail_url: string | null;
+  url: string | null;
+  views: number | null;
+  likes: number | null;
+}
+
+interface PreviewResponse {
+  username: string;
+  display_name: string | null;
+  bio: string | null;
+  profile_pic_url: string | null;
+  followers: number | null;
+  following: number | null;
+  posts_count: number | null;
+  recent_posts: PreviewPost[];
+}
+
 function fmt(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   return new Intl.NumberFormat("es-CO").format(n);
 }
 
+function proxied(url: string | null | undefined): string | undefined {
+  if (!url) return undefined;
+  return `/api/proxy-image?url=${encodeURIComponent(url)}`;
+}
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [newUsername, setNewUsername] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [addPinned, setAddPinned] = useState(true);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
   const [migrations, setMigrations] = useState<MigrationListResponse | null>(
     null,
   );
@@ -43,7 +76,6 @@ export default function AccountsPage() {
     const j = await res.json();
     setAccounts(j.accounts || []);
   }
-
   async function loadMigrations() {
     const res = await fetch("/api/migrate");
     const j = await res.json();
@@ -55,51 +87,140 @@ export default function AccountsPage() {
     loadMigrations();
   }, []);
 
-  // Close menus when clicking outside.
   useEffect(() => {
-    function onDocClick() {
+    if (!openMenu) return;
+    function onDoc() {
       setOpenMenu(null);
     }
-    if (openMenu) {
-      document.addEventListener("click", onDocClick);
-      return () => document.removeEventListener("click", onDocClick);
-    }
+    document.addEventListener("click", onDoc);
+    return () => document.removeEventListener("click", onDoc);
   }, [openMenu]);
 
-  async function addAccount(e: React.FormEvent) {
+  // ---------- VERIFY + ADD FLOW ----------
+
+  async function verify(e: React.FormEvent) {
     e.preventDefault();
     const username = newUsername.replace(/^@/, "").trim().toLowerCase();
     if (!username) return;
-    setBusy("add");
-    setMsg(null);
-    const res = await fetch("/api/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, is_pinned: false }),
-    });
-    const j = await res.json();
-    setBusy(null);
-    if (!res.ok) setMsg(j.error || `Error ${res.status}`);
-    else {
-      setNewUsername("");
-      refresh();
+    setVerifying(true);
+    setVerifyError(null);
+    setPreview(null);
+    try {
+      const res = await fetch("/api/accounts/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Error ${res.status}`);
+      setPreview(j);
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setVerifying(false);
     }
   }
 
+  function cancelPreview() {
+    setPreview(null);
+    setVerifyError(null);
+    setNewUsername("");
+  }
+
+  async function pollScrape(runId: string): Promise<{ ok: boolean; msg: string }> {
+    for (let tries = 0; tries < 120; tries++) {
+      await new Promise((r) => setTimeout(r, 8_000));
+      const sRes = await fetch(`/api/scrape-account/${runId}`);
+      const s = await sRes.json();
+      if (s.status === "SUCCEEDED") {
+        return {
+          ok: true,
+          msg: `Scrape completo: ${s.videos_added ?? 0} nuevos, ${s.videos_updated ?? 0} actualizados.`,
+        };
+      }
+      if (["FAILED", "ABORTED", "TIMED-OUT"].includes(s.status)) {
+        return { ok: false, msg: `Scrape ${s.status}: ${s.error || ""}` };
+      }
+      setProgress(`Scrape en progreso (${s.status})…`);
+    }
+    return { ok: false, msg: "Scrape excedió timeout de espera." };
+  }
+
+  async function analyzeLoop(username: string) {
+    let total = 0;
+    let safety = 0;
+    while (safety++ < 100) {
+      setProgress(`Analizando lote (Deepgram + Claude)… ${total} procesados hasta ahora`);
+      const r = await fetch(
+        `/api/analyze-pending?account=${username}&batch=5`,
+        { method: "POST" },
+      );
+      const j = await r.json();
+      if (!r.ok) {
+        setProgress(`Error en analyze: ${j.error || r.status}`);
+        return;
+      }
+      total += j.processed || 0;
+      if (!j.processed || j.processed === 0) break;
+      if (j.remaining === 0) break;
+    }
+    setProgress(`Análisis terminado. Total procesados: ${total}.`);
+  }
+
+  async function confirmAdd() {
+    if (!preview) return;
+    setBusyAction("add");
+    setProgress("Creando cuenta…");
+    try {
+      const r1 = await fetch("/api/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: preview.username, is_pinned: addPinned }),
+      });
+      const j1 = await r1.json();
+      if (!r1.ok) throw new Error(j1.error || `Add ${r1.status}`);
+
+      setProgress("Disparando scrape histórico completo (3–10 min)…");
+      const r2 = await fetch("/api/scrape-account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: preview.username }),
+      });
+      const j2 = await r2.json();
+      if (!r2.ok) throw new Error(j2.error || `Scrape kickoff ${r2.status}`);
+
+      const scrapeResult = await pollScrape(j2.run_id);
+      if (!scrapeResult.ok) {
+        setProgress(scrapeResult.msg);
+      } else {
+        setProgress(`${scrapeResult.msg} Iniciando análisis automático…`);
+        await analyzeLoop(preview.username);
+      }
+      cancelPreview();
+      refresh();
+    } catch (err) {
+      setProgress(`Error: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  // ---------- EXISTING ACCOUNT ACTIONS ----------
+
   async function togglePin(u: string, current: boolean) {
-    setBusy(`pin-${u}`);
+    setBusyAction(`pin-${u}`);
     await fetch(`/api/accounts/${u}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ is_pinned: !current }),
     });
-    setBusy(null);
+    setBusyAction(null);
     refresh();
   }
 
   async function refreshRecent(u: string) {
     setOpenMenu(null);
-    setBusy(`refresh-${u}`);
+    setBusyAction(`refresh-${u}`);
     setMsg(`Refrescando últimos 10 posts de @${u}…`);
     const res = await fetch("/api/refresh-account", {
       method: "POST",
@@ -107,16 +228,19 @@ export default function AccountsPage() {
       body: JSON.stringify({ username: u, limit: 10 }),
     });
     const j = await res.json();
-    setBusy(null);
+    setBusyAction(null);
     if (!res.ok) setMsg(`Error: ${j.error || res.status}`);
-    else setMsg(`@${u}: ${j.videosAdded} nuevos, ${j.videosUpdated} actualizados (${j.postsTotal} posts totales).`);
+    else
+      setMsg(
+        `@${u}: ${j.videosAdded} nuevos, ${j.videosUpdated} actualizados (${j.postsTotal} posts totales).`,
+      );
     refresh();
   }
 
   async function scrapeFullHistory(u: string) {
     setOpenMenu(null);
-    setBusy(`scrape-${u}`);
-    setMsg(`Scrape histórico iniciado para @${u}. Puede tardar 3-10 min.`);
+    setBusyAction(`scrape-${u}`);
+    setMsg(`Scrape histórico iniciado para @${u}. Tarda 3–10 min.`);
     const res = await fetch("/api/scrape-account", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -124,60 +248,55 @@ export default function AccountsPage() {
     });
     const j = await res.json();
     if (!res.ok) {
-      setBusy(null);
+      setBusyAction(null);
       setMsg(j.error || `Error ${res.status}`);
       return;
     }
-    const runId = j.run_id;
-    for (let tries = 0; tries < 180; tries++) {
-      await new Promise((r) => setTimeout(r, 10_000));
-      const sRes = await fetch(`/api/scrape-account/${runId}`);
-      const s = await sRes.json();
-      setMsg(`@${u}: ${s.status}${s.videos_added !== undefined ? ` — ${s.videos_added} nuevos, ${s.videos_updated} actualizados` : ""}`);
-      if (["SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"].includes(s.status))
-        break;
-    }
-    setBusy(null);
+    const result = await pollScrape(j.run_id);
+    setMsg(result.msg);
+    if (result.ok) await analyzeLoop(u);
+    setBusyAction(null);
     refresh();
   }
 
   async function softDelete(u: string) {
     setOpenMenu(null);
-    if (!confirm(`Borrar @${u}? Los datos quedan retenidos 30 días por si quieres recuperarlos.`))
+    if (
+      !confirm(
+        `Borrar @${u}? Los datos quedan retenidos 30 días por si quieres recuperarlos.`,
+      )
+    )
       return;
-    setBusy(`del-${u}`);
+    setBusyAction(`del-${u}`);
     const res = await fetch(`/api/accounts/${u}`, { method: "DELETE" });
     const j = await res.json();
-    setBusy(null);
+    setBusyAction(null);
     if (!res.ok) setMsg(`Error: ${j.error || res.status}`);
     else setMsg(`@${u} borrada (retención 30 días).`);
     refresh();
   }
 
   async function applyMigrations() {
-    setBusy("migrate");
+    setBusyAction("migrate");
     setMsg("Aplicando migraciones pendientes…");
     const res = await fetch("/api/migrate", { method: "POST" });
     const j = await res.json();
-    setBusy(null);
-    if (!res.ok) {
-      setMsg(`Error en migración: ${j.error || res.status}`);
-    } else {
+    setBusyAction(null);
+    if (!res.ok) setMsg(`Error: ${j.error || res.status}`);
+    else {
       const applied = (j.results || []).filter(
         (r: { status: string }) => r.status === "applied",
       );
       const failed = (j.results || []).filter(
         (r: { status: string }) => r.status === "failed",
       );
-      if (failed.length > 0) {
+      if (failed.length > 0)
         setMsg(
           `Migración falló en: ${failed.map((f: { name: string; error?: string }) => `${f.name} (${f.error || "?"})`).join(", ")}`,
         );
-      } else if (applied.length === 0) {
-        setMsg("Sin migraciones pendientes. Schema al día.");
-      } else {
+      else if (applied.length === 0) setMsg("Sin migraciones pendientes. Schema al día.");
+      else
         setMsg(`Aplicadas: ${applied.map((a: { name: string }) => a.name).join(", ")}`);
-      }
     }
     loadMigrations();
   }
@@ -190,10 +309,10 @@ export default function AccountsPage() {
       )
     )
       return;
-    setBusy(`del-${u}`);
+    setBusyAction(`del-${u}`);
     const res = await fetch(`/api/accounts/${u}?hard=1`, { method: "DELETE" });
     const j = await res.json();
-    setBusy(null);
+    setBusyAction(null);
     if (!res.ok) setMsg(`Error: ${j.error || res.status}`);
     else setMsg(`@${u} eliminada permanentemente.`);
     refresh();
@@ -203,29 +322,53 @@ export default function AccountsPage() {
     <main className="mx-auto max-w-4xl px-4 py-10">
       <h1 className="text-3xl font-bold tracking-tight">Cuentas</h1>
       <p className="mt-2 text-sm text-zinc-600">
-        Agrega cuentas, fija las que quieras observar diariamente. El menú (•••)
-        de cada cuenta tiene refresh y borrar. El cron diario refresca solo los
-        últimos 10 posts de las fijadas.
+        Agrega una cuenta. Primero te muestro un preview para que confirmes que
+        es la correcta. Después scrapeo histórico y analizo automáticamente
+        todos los videos con audio detectable.
       </p>
 
-      <form
-        onSubmit={addAccount}
-        className="mt-6 flex gap-2 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm"
-      >
-        <input
-          value={newUsername}
-          onChange={(e) => setNewUsername(e.target.value)}
-          placeholder="username (sin @)"
-          className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:border-zinc-900 focus:outline-none"
-        />
-        <button
-          type="submit"
-          disabled={busy === "add"}
-          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+      {/* ADD FORM */}
+      {!preview ? (
+        <form
+          onSubmit={verify}
+          className="mt-6 flex gap-2 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm"
         >
-          {busy === "add" ? "Agregando…" : "Agregar"}
-        </button>
-      </form>
+          <input
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value)}
+            placeholder="username (sin @)"
+            className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:border-zinc-900 focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={verifying || !newUsername.trim()}
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {verifying ? "Verificando…" : "Verificar"}
+          </button>
+        </form>
+      ) : (
+        <PreviewCard
+          preview={preview}
+          addPinned={addPinned}
+          onTogglePinned={() => setAddPinned((v) => !v)}
+          onCancel={cancelPreview}
+          onConfirm={confirmAdd}
+          busy={busyAction === "add"}
+        />
+      )}
+
+      {verifyError && (
+        <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          {verifyError}
+        </div>
+      )}
+
+      {progress && (
+        <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+          {progress}
+        </div>
+      )}
 
       {msg && (
         <div className="mt-4 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
@@ -233,27 +376,40 @@ export default function AccountsPage() {
         </div>
       )}
 
+      {/* EXISTING ACCOUNTS LIST */}
       <ul className="mt-6 divide-y divide-zinc-100 rounded-xl border border-zinc-200 bg-white shadow-sm">
         {accounts.map((a) => (
           <li key={a.username} className="flex items-center gap-3 p-4">
             <button
               onClick={() => togglePin(a.username, a.is_pinned)}
-              disabled={busy === `pin-${a.username}`}
+              disabled={busyAction === `pin-${a.username}`}
               title={a.is_pinned ? "Quitar de fijadas" : "Fijar"}
               className={`text-lg ${a.is_pinned ? "text-amber-500" : "text-zinc-300 hover:text-zinc-500"}`}
             >
               ★
             </button>
+            {a.profile_pic_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={proxied(a.profile_pic_url)}
+                alt={a.username}
+                className="h-10 w-10 rounded-full object-cover"
+              />
+            ) : (
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-200 text-xs text-zinc-500">
+                ?
+              </div>
+            )}
             <div className="flex-1">
               <div className="font-medium">@{a.username}</div>
               <div className="text-xs text-zinc-500">
-                {a.video_count} videos · {fmt(a.followers_latest)} followers
+                {a.video_count} posts · {fmt(a.followers_latest)} followers
               </div>
             </div>
 
-            {busy?.startsWith(`refresh-${a.username}`) ||
-            busy?.startsWith(`scrape-${a.username}`) ||
-            busy?.startsWith(`del-${a.username}`) ? (
+            {busyAction?.startsWith(`refresh-${a.username}`) ||
+            busyAction?.startsWith(`scrape-${a.username}`) ||
+            busyAction?.startsWith(`del-${a.username}`) ? (
               <span className="text-xs text-zinc-500">Trabajando…</span>
             ) : null}
 
@@ -283,7 +439,7 @@ export default function AccountsPage() {
                     onClick={() => scrapeFullHistory(a.username)}
                     className="block w-full px-4 py-2 text-left text-sm hover:bg-zinc-50"
                   >
-                    Refrescar histórico completo
+                    Re-scrape histórico + re-analizar
                   </button>
                   <div className="border-t border-zinc-100" />
                   <button
@@ -314,7 +470,12 @@ export default function AccountsPage() {
         <section className="mt-12">
           <details className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
             <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-zinc-500">
-              Schema · {migrations.migrations.filter((m) => !m.applied_at && m.applies_via === "auto").length}{" "}
+              Schema ·{" "}
+              {
+                migrations.migrations.filter(
+                  (m) => !m.applied_at && m.applies_via === "auto",
+                ).length
+              }{" "}
               pendientes
             </summary>
             <div className="mt-4">
@@ -326,12 +487,10 @@ export default function AccountsPage() {
               ) : (
                 <button
                   onClick={applyMigrations}
-                  disabled={busy === "migrate"}
+                  disabled={busyAction === "migrate"}
                   className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  {busy === "migrate"
-                    ? "Aplicando…"
-                    : "Aplicar migraciones pendientes"}
+                  {busyAction === "migrate" ? "Aplicando…" : "Aplicar migraciones pendientes"}
                 </button>
               )}
               <ul className="mt-4 divide-y divide-zinc-100 text-sm">
@@ -356,5 +515,138 @@ export default function AccountsPage() {
         </section>
       )}
     </main>
+  );
+}
+
+function PreviewCard({
+  preview,
+  addPinned,
+  onTogglePinned,
+  onCancel,
+  onConfirm,
+  busy,
+}: {
+  preview: PreviewResponse;
+  addPinned: boolean;
+  onTogglePinned: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+        ¿Es esta la cuenta correcta?
+      </h2>
+      <div className="flex items-start gap-4">
+        {preview.profile_pic_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={proxied(preview.profile_pic_url)}
+            alt={preview.username}
+            className="h-20 w-20 rounded-full object-cover shadow-inner"
+          />
+        ) : (
+          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-zinc-200 text-zinc-500">
+            ?
+          </div>
+        )}
+        <div className="flex-1">
+          <div className="text-lg font-semibold">
+            @{preview.username}
+            {preview.display_name && (
+              <span className="ml-2 text-base font-normal text-zinc-600">
+                · {preview.display_name}
+              </span>
+            )}
+          </div>
+          {preview.bio && (
+            <p className="mt-1 whitespace-pre-line text-sm text-zinc-600">
+              {preview.bio}
+            </p>
+          )}
+          <div className="mt-2 grid grid-cols-3 gap-3 text-xs">
+            <Stat label="Followers" value={fmt(preview.followers)} />
+            <Stat label="Following" value={fmt(preview.following)} />
+            <Stat label="Posts (IG)" value={fmt(preview.posts_count)} />
+          </div>
+        </div>
+      </div>
+
+      {preview.recent_posts.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+            Últimos posts
+          </div>
+          <div className="flex gap-2">
+            {preview.recent_posts.map((p) => (
+              <a
+                key={p.shortcode}
+                href={p.url || "#"}
+                target="_blank"
+                rel="noreferrer"
+                className="block w-1/3 overflow-hidden rounded-md border border-zinc-200"
+              >
+                {p.thumbnail_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={proxied(p.thumbnail_url)}
+                    alt={p.shortcode}
+                    className="h-32 w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-32 w-full items-center justify-center bg-zinc-100 text-xs text-zinc-400">
+                    sin preview
+                  </div>
+                )}
+                <div className="p-1 text-[10px] text-zinc-500">
+                  {p.type || "Post"} · {fmt(p.views)} vistas
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-5 flex items-center justify-between">
+        <label className="inline-flex items-center gap-2 text-sm text-zinc-700">
+          <input
+            type="checkbox"
+            checked={addPinned}
+            onChange={onTogglePinned}
+          />
+          Fijar (el cron diario refrescará esta cuenta)
+        </label>
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {busy
+              ? "Procesando…"
+              : "Agregar, scrapear historial y analizar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-zinc-50 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-zinc-500">
+        {label}
+      </div>
+      <div className="font-semibold tabular-nums">{value}</div>
+    </div>
   );
 }

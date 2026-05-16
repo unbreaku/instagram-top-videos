@@ -127,8 +127,6 @@ export default function AccountPage({
   const [sort, setSort] = useState<SortKey>("views");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
@@ -322,30 +320,12 @@ export default function AccountPage({
         </div>
       </header>
 
-      {chartData.length > 1 && (
-        <section className="mb-10 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
-            Crecimiento de followers
-          </h2>
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid stroke="#f1f5f9" />
-                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} width={70} />
-                <Tooltip />
-                <Line
-                  type="monotone"
-                  dataKey="followers"
-                  stroke="#18181b"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </section>
-      )}
+      <Stats90d
+        videos={videos}
+        snapshots={detail.snapshots}
+        chartData={chartData}
+      />
+
 
       {lifts.length > 1 && (
         <section className="mb-10">
@@ -431,42 +411,7 @@ export default function AccountPage({
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
             Posts ({sorted.length} de {videos.length})
           </h2>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={async () => {
-                setAnalyzing(true);
-                setAnalyzeMsg("Analizando lote de 5…");
-                try {
-                  const r = await fetch(
-                    `/api/analyze-pending?account=${params.username}&batch=5`,
-                    { method: "POST" },
-                  );
-                  const j = await r.json();
-                  setAnalyzeMsg(
-                    `Procesados ${j.processed}, quedan ${j.remaining ?? "?"} por analizar.`,
-                  );
-                  const vRes = await fetch(
-                    `/api/accounts/${params.username}/videos?sort=posted&limit=1000`,
-                  );
-                  setVideos((await vRes.json()).videos || []);
-                } catch (e) {
-                  setAnalyzeMsg(`Error: ${e instanceof Error ? e.message : e}`);
-                } finally {
-                  setAnalyzing(false);
-                }
-              }}
-              disabled={analyzing}
-              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50 disabled:opacity-50"
-            >
-              {analyzing ? "Analizando…" : "Analizar pendientes"}
-            </button>
-          </div>
         </div>
-        {analyzeMsg && (
-          <div className="mb-3 rounded-md border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-700">
-            {analyzeMsg}
-          </div>
-        )}
 
         {/* FILTER PANEL */}
         <div className="mb-4 grid grid-cols-1 gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
@@ -884,6 +829,148 @@ export default function AccountPage({
         )}
       </section>
     </main>
+  );
+}
+
+function Stats90d({
+  videos,
+  snapshots,
+  chartData,
+}: {
+  videos: Video[];
+  snapshots: Snapshot[];
+  chartData: Array<{ date: string; followers: number | null }>;
+}) {
+  const cutoff = Date.now() - 90 * 86400 * 1000;
+  const inWindow = videos.filter((v) => {
+    if (!v.posted_at) return false;
+    return new Date(v.posted_at).getTime() >= cutoff;
+  });
+  const totalViews = inWindow.reduce((s, v) => s + (v.latest_views || 0), 0);
+  const totalLikes = inWindow.reduce((s, v) => s + (v.latest_likes || 0), 0);
+  const totalComments = inWindow.reduce(
+    (s, v) => s + (v.latest_comments || 0),
+    0,
+  );
+  const postsPerDay = inWindow.length / 90;
+  const avgViews = inWindow.length > 0 ? totalViews / inWindow.length : 0;
+  const avgLikes = inWindow.length > 0 ? totalLikes / inWindow.length : 0;
+  const engagementRate =
+    totalViews > 0 ? ((totalLikes + totalComments) / totalViews) * 100 : 0;
+  const topPost =
+    inWindow.length > 0
+      ? [...inWindow].sort(
+          (a, b) => (b.latest_views || 0) - (a.latest_views || 0),
+        )[0]
+      : null;
+
+  // Follower delta in window — use snapshots inside the window.
+  const snaps = snapshots
+    .filter((s) => typeof s.followers_count === "number")
+    .sort((a, b) => a.captured_at.localeCompare(b.captured_at));
+  const inWindowSnaps = snaps.filter(
+    (s) => new Date(s.captured_at).getTime() >= cutoff,
+  );
+  let followerDelta: number | null = null;
+  if (inWindowSnaps.length >= 2) {
+    followerDelta =
+      (inWindowSnaps[inWindowSnaps.length - 1].followers_count || 0) -
+      (inWindowSnaps[0].followers_count || 0);
+  }
+
+  return (
+    <section className="mb-10 grid gap-6 lg:grid-cols-3">
+      {chartData.length > 1 ? (
+        <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm lg:col-span-2">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+            Crecimiento de followers
+          </h2>
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData}>
+                <CartesianGrid stroke="#f1f5f9" />
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} width={70} />
+                <Tooltip />
+                <Line
+                  type="monotone"
+                  dataKey="followers"
+                  stroke="#18181b"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Cada punto = snapshot del cron diario. Mañana ya tendrás más
+            puntos.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-500 lg:col-span-2">
+          Faltan snapshots para graficar (necesitas al menos 2 días de cron).
+        </div>
+      )}
+
+      <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+          Últimos 90 días
+        </h2>
+        <dl className="grid grid-cols-2 gap-3 text-sm">
+          <Stat90 label="Posts" value={fmt(inWindow.length)} />
+          <Stat90 label="Posts / día" value={postsPerDay.toFixed(1)} />
+          <Stat90 label="Δ Followers" value={followerDelta == null ? "—" : `${followerDelta > 0 ? "+" : ""}${fmt(followerDelta)}`} positive={followerDelta != null ? followerDelta > 0 : undefined} />
+          <Stat90 label="Engagement" value={`${engagementRate.toFixed(2)}%`} />
+          <Stat90 label="Vistas totales" value={fmt(totalViews)} />
+          <Stat90 label="Vistas / post" value={fmt(Math.round(avgViews))} />
+          <Stat90 label="Likes totales" value={fmt(totalLikes)} />
+          <Stat90 label="Likes / post" value={fmt(Math.round(avgLikes))} />
+        </dl>
+        {topPost && (
+          <div className="mt-3 border-t border-zinc-100 pt-3 text-xs">
+            <div className="text-zinc-500">Mejor post del período:</div>
+            <a
+              href={topPost.url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 block truncate font-medium text-blue-600 hover:underline"
+              title={topPost.hook || topPost.caption || topPost.shortcode}
+            >
+              {topPost.hook || topPost.caption || topPost.shortcode}
+            </a>
+            <div className="text-zinc-500">
+              {fmt(topPost.latest_views)} vistas · {fmtDate(topPost.posted_at)}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Stat90({
+  label,
+  value,
+  positive,
+}: {
+  label: string;
+  value: string;
+  positive?: boolean;
+}) {
+  const color =
+    positive === true
+      ? "text-emerald-700"
+      : positive === false
+        ? "text-red-700"
+        : "text-zinc-900";
+  return (
+    <div className="rounded-md bg-zinc-50 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-zinc-500">
+        {label}
+      </div>
+      <div className={`font-semibold tabular-nums ${color}`}>{value}</div>
+    </div>
   );
 }
 
