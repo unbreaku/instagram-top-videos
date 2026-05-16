@@ -85,7 +85,11 @@ export async function GET(req: Request, { params }: Params) {
     searchParams.get("order") === "asc"
       ? { ascending: true }
       : { ascending: false };
-  const limit = Math.min(Number(searchParams.get("limit") || 100), 1000);
+  // Supabase / PostgREST silently returns an empty array when limit is
+  // exactly 1000 (max-rows default). Cap at 999 to stay below the cliff and
+  // use range pagination for accounts that exceed that ceiling.
+  const requested = Math.max(1, Number(searchParams.get("limit") || 100));
+  const limit = Math.min(requested, 999);
 
   const sortCol: Record<string, string> = {
     views: "latest_views",
