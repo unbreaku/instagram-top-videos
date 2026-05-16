@@ -44,6 +44,8 @@ export interface ApifyInstagramItem {
     followsCount?: number;
     postsCount?: number;
     biography?: string;
+    profilePicUrl?: string;
+    profilePicUrlHD?: string;
   };
   // Or on a parentData field (older shape, kept for safety).
   parentData?: {
@@ -52,6 +54,7 @@ export interface ApifyInstagramItem {
     postsCount?: number;
     fullName?: string;
     biography?: string;
+    profilePicUrl?: string;
   };
   // Or just top-level (rare but seen on some scrapers).
   followersCount?: number;
@@ -59,6 +62,9 @@ export interface ApifyInstagramItem {
   postsCount?: number;
   fullName?: string;
   biography?: string;
+  profilePicUrl?: string;
+  profilePicUrlHD?: string;
+  ownerProfilePicUrl?: string;
 }
 
 /**
@@ -71,6 +77,7 @@ export function extractProfileData(item: ApifyInstagramItem): {
   postsCount: number | null;
   fullName: string | null;
   biography: string | null;
+  profilePicUrl: string | null;
 } | null {
   const followers =
     item.ownerFollowersCount ??
@@ -98,6 +105,14 @@ export function extractProfileData(item: ApifyInstagramItem): {
     null;
   const biography =
     item.owner?.biography ?? item.parentData?.biography ?? item.biography ?? null;
+  const profilePicUrl =
+    item.owner?.profilePicUrlHD ??
+    item.owner?.profilePicUrl ??
+    item.parentData?.profilePicUrl ??
+    item.profilePicUrlHD ??
+    item.profilePicUrl ??
+    item.ownerProfilePicUrl ??
+    null;
 
   // If nothing was found, this item doesn't have profile data attached.
   if (
@@ -105,7 +120,8 @@ export function extractProfileData(item: ApifyInstagramItem): {
     following === null &&
     posts === null &&
     fullName === null &&
-    biography === null
+    biography === null &&
+    profilePicUrl === null
   ) {
     return null;
   }
@@ -115,6 +131,7 @@ export function extractProfileData(item: ApifyInstagramItem): {
     postsCount: typeof posts === "number" ? posts : null,
     fullName: typeof fullName === "string" ? fullName : null,
     biography: typeof biography === "string" ? biography : null,
+    profilePicUrl: typeof profilePicUrl === "string" ? profilePicUrl : null,
   };
 }
 

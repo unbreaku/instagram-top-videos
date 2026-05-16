@@ -8,14 +8,84 @@ interface Params {
   params: { username: string };
 }
 
+interface VideoRow {
+  shortcode: string;
+  account_username: string;
+  type: string | null;
+  caption: string | null;
+  posted_at: string | null;
+  url: string;
+  thumbnail_url: string | null;
+  duration_seconds: number | null;
+  latest_views: number | null;
+  latest_likes: number | null;
+  latest_comments: number | null;
+  latest_captured_at: string | null;
+  transcript: string | null;
+  cta: string | null;
+  hook: string | null;
+  format_tags: string[] | null;
+  analyzed_at: string | null;
+}
+
+interface SnapshotRow {
+  captured_at: string;
+  followers_count: number | null;
+}
+
+/**
+ * Estimates how many of an account's daily follower deltas can be attributed
+ * to each video posted in that 24h window. Weighted by views — videos with
+ * more views absorb a larger share. If views are zero/missing we fall back
+ * to equal split. Returns a shortcode → followers map.
+ */
+function attributeFollowers(
+  videos: Pick<VideoRow, "shortcode" | "posted_at" | "latest_views">[],
+  snapshots: SnapshotRow[],
+): Map<string, number> {
+  const map = new Map<string, number>();
+  const snaps = snapshots
+    .filter((s) => typeof s.followers_count === "number")
+    .sort((a, b) => a.captured_at.localeCompare(b.captured_at));
+
+  for (let i = 1; i < snaps.length; i++) {
+    const prev = snaps[i - 1];
+    const curr = snaps[i];
+    const delta = (curr.followers_count ?? 0) - (prev.followers_count ?? 0);
+    const windowStart = new Date(prev.captured_at).getTime();
+    const windowEnd = new Date(curr.captured_at).getTime();
+    const inWindow = videos.filter((v) => {
+      if (!v.posted_at) return false;
+      const t = new Date(v.posted_at).getTime();
+      return t > windowStart && t <= windowEnd;
+    });
+    if (inWindow.length === 0) continue;
+    const totalViews = inWindow.reduce(
+      (s, v) => s + (v.latest_views || 0),
+      0,
+    );
+    for (const v of inWindow) {
+      if (totalViews > 0) {
+        const share = ((v.latest_views || 0) / totalViews) * delta;
+        map.set(v.shortcode, Math.round(share));
+      } else {
+        map.set(v.shortcode, Math.round(delta / inWindow.length));
+      }
+    }
+  }
+  return map;
+}
+
 export async function GET(req: Request, { params }: Params) {
   const sb = getServerSupabase();
   const username = params.username.replace(/^@/, "").trim().toLowerCase();
   const { searchParams } = new URL(req.url);
   const sort = searchParams.get("sort") || "views";
   const order =
-    searchParams.get("order") === "asc" ? { ascending: true } : { ascending: false };
-  const limit = Math.min(Number(searchParams.get("limit") || 100), 500);
+    searchParams.get("order") === "asc"
+      ? { ascending: true }
+      : { ascending: false };
+  const limit = Math.min(Number(searchParams.get("limit") || 100), 1000);
 
   const sortCol: Record<string, string> = {
     views: "latest_views",
@@ -25,15 +95,39 @@ export async function GET(req: Request, { params }: Params) {
   };
   const col = sortCol[sort] || "latest_views";
 
-  const { data, error } = await sb
-    .from("videos")
-    .select(
-      "shortcode, account_username, type, caption, posted_at, url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook, format_tags, analyzed_at",
-    )
-    .eq("account_username", username)
-    .order(col, order)
-    .limit(limit);
-  if (error)
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ videos: data || [] });
+  const [videosRes, snapshotsRes] = await Promise.all([
+    sb
+      .from("videos")
+      .select(
+        "shortcode, account_username, type, caption, posted_at, url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook, format_tags, analyzed_at",
+      )
+      .eq("account_username", username)
+      // nullsFirst: false → photos with NULL views fall to the bottom when
+      // sorting by views/likes/comments; otherwise they'd pollute the top.
+      .order(col, { ...order, nullsFirst: false })
+      .limit(limit),
+    sb
+      .from("account_snapshots")
+      .select("captured_at, followers_count")
+      .eq("account_username", username)
+      .not("followers_count", "is", null)
+      .order("captured_at", { ascending: true }),
+  ]);
+
+  if (videosRes.error)
+    return NextResponse.json(
+      { error: videosRes.error.message },
+      { status: 500 },
+    );
+
+  const videos = (videosRes.data || []) as VideoRow[];
+  const snapshots = (snapshotsRes.data || []) as SnapshotRow[];
+  const attribution = attributeFollowers(videos, snapshots);
+
+  const out = videos.map((v) => ({
+    ...v,
+    estimated_followers: attribution.get(v.shortcode) ?? null,
+  }));
+
+  return NextResponse.json({ videos: out });
 }

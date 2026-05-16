@@ -27,6 +27,7 @@ interface Video {
   cta: string | null;
   format_tags: string[] | null;
   analyzed_at: string | null;
+  estimated_followers: number | null;
 }
 
 interface Snapshot {
@@ -42,6 +43,8 @@ interface AccountDetail {
     display_name: string | null;
     is_pinned: boolean;
     last_full_scrape_at: string | null;
+    profile_pic_url?: string | null;
+    bio?: string | null;
   };
   snapshots: Snapshot[];
 }
@@ -81,7 +84,35 @@ function truncate(s: string, n = 100): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-type SortKey = "views" | "likes" | "comments" | "posted";
+type SortKey = "views" | "likes" | "comments" | "posted" | "estimated_followers";
+
+const TYPE_OPTIONS = ["Todos", "Reel", "Video", "IGTV", "Image", "Sidecar", "Other"];
+
+interface FilterState {
+  type: string;
+  dateFrom: string;
+  dateTo: string;
+  minViews: number;
+  minLikes: number;
+  minComments: number;
+  search: string;
+  tags: string[]; // multi-select
+  onlyAnalyzed: boolean;
+  onlyWithVideo: boolean; // hide images / sidecars
+}
+
+const EMPTY_FILTERS: FilterState = {
+  type: "Todos",
+  dateFrom: "",
+  dateTo: "",
+  minViews: 0,
+  minLikes: 0,
+  minComments: 0,
+  search: "",
+  tags: [],
+  onlyAnalyzed: false,
+  onlyWithVideo: false,
+};
 
 export default function AccountPage({
   params,
@@ -93,6 +124,8 @@ export default function AccountPage({
   const [lifts, setLifts] = useState<DailyLift[]>([]);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<SortKey>("views");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
 
@@ -101,7 +134,7 @@ export default function AccountPage({
     (async () => {
       const [aRes, vRes, lRes] = await Promise.all([
         fetch(`/api/accounts/${params.username}`),
-        fetch(`/api/accounts/${params.username}/videos?sort=${sort}&limit=500`),
+        fetch(`/api/accounts/${params.username}/videos?sort=posted&limit=1000`),
         fetch(`/api/accounts/${params.username}/lifts`),
       ]);
       const a = await aRes.json();
@@ -116,7 +149,99 @@ export default function AccountPage({
     return () => {
       cancelled = true;
     };
-  }, [params.username, sort]);
+  }, [params.username]);
+
+  // Available tags inferred from the data — fed into the multi-select.
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const v of videos) (v.format_tags || []).forEach((t) => set.add(t));
+    return [...set].sort();
+  }, [videos]);
+
+  const filtered = useMemo(() => {
+    const sLower = filters.search.toLowerCase().trim();
+    const from = filters.dateFrom ? new Date(filters.dateFrom).getTime() : null;
+    const to = filters.dateTo
+      ? new Date(filters.dateTo).getTime() + 86400000
+      : null;
+    return videos.filter((v) => {
+      if (filters.type !== "Todos" && (v.type || "Other") !== filters.type)
+        return false;
+      if (filters.onlyWithVideo && !["Reel", "Video", "IGTV"].includes(v.type || ""))
+        return false;
+      if (filters.onlyAnalyzed && !v.analyzed_at) return false;
+      if (filters.minViews && (v.latest_views || 0) < filters.minViews)
+        return false;
+      if (filters.minLikes && (v.latest_likes || 0) < filters.minLikes)
+        return false;
+      if (filters.minComments && (v.latest_comments || 0) < filters.minComments)
+        return false;
+      if (v.posted_at) {
+        const t = new Date(v.posted_at).getTime();
+        if (from && t < from) return false;
+        if (to && t > to) return false;
+      } else if (from || to) {
+        return false;
+      }
+      if (filters.tags.length > 0) {
+        const vt = new Set(v.format_tags || []);
+        if (!filters.tags.every((t) => vt.has(t))) return false;
+      }
+      if (sLower) {
+        const hay = [
+          v.caption,
+          v.hook,
+          v.cta,
+          ...(v.format_tags || []),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(sLower)) return false;
+      }
+      return true;
+    });
+  }, [videos, filters]);
+
+  const sorted = useMemo(() => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let av: number, bv: number;
+      switch (sort) {
+        case "posted":
+          av = a.posted_at ? new Date(a.posted_at).getTime() : 0;
+          bv = b.posted_at ? new Date(b.posted_at).getTime() : 0;
+          break;
+        case "likes":
+          av = a.latest_likes || 0;
+          bv = b.latest_likes || 0;
+          break;
+        case "comments":
+          av = a.latest_comments || 0;
+          bv = b.latest_comments || 0;
+          break;
+        case "estimated_followers":
+          av = a.estimated_followers ?? -Infinity;
+          bv = b.estimated_followers ?? -Infinity;
+          break;
+        case "views":
+        default:
+          av = a.latest_views || 0;
+          bv = b.latest_views || 0;
+      }
+      return (av - bv) * dir;
+    });
+    return arr;
+  }, [filtered, sort, sortDir]);
+
+  function toggleSort(k: SortKey) {
+    if (sort === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSort(k);
+      setSortDir(k === "posted" ? "desc" : "desc");
+    }
+  }
 
   const chartData = useMemo(() => {
     if (!detail) return [];
@@ -150,13 +275,27 @@ export default function AccountPage({
     );
   }
 
+  const visibleAttribTotal = sorted.reduce(
+    (s, v) => s + (v.estimated_followers || 0),
+    0,
+  );
+
   return (
     <main className="mx-auto max-w-7xl px-4 py-10">
       <Link href="/" className="text-sm text-zinc-500 hover:text-zinc-900">
         ← Dashboard
       </Link>
-      <header className="mt-2 mb-8 flex items-baseline justify-between">
-        <div>
+      <header className="mt-2 mb-8 flex items-start gap-4">
+        {detail.account.profile_pic_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={detail.account.profile_pic_url}
+            alt={detail.account.username}
+            referrerPolicy="no-referrer"
+            className="h-16 w-16 rounded-full object-cover shadow-inner"
+          />
+        ) : null}
+        <div className="flex-1">
           <h1 className="text-3xl font-bold tracking-tight">
             @{detail.account.username}
           </h1>
@@ -165,7 +304,7 @@ export default function AccountPage({
           )}
         </div>
         <div className="text-right text-sm text-zinc-500">
-          {videos.length} videos en DB
+          {videos.length} posts en DB
         </div>
       </header>
 
@@ -199,11 +338,6 @@ export default function AccountPage({
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
             Crecimiento diario · videos atribuibles
           </h2>
-          <p className="mb-3 text-xs text-zinc-500">
-            Cada fila es un día medido por el cron. El delta es la diferencia
-            de followers vs el día anterior. Los videos listados son los
-            publicados en esa ventana — probablemente responsables del lift.
-          </p>
           <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm">
             <table className="w-full border-collapse text-sm">
               <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
@@ -211,7 +345,7 @@ export default function AccountPage({
                   <th className="px-3 py-2">Fecha</th>
                   <th className="px-3 py-2 text-right">Followers</th>
                   <th className="px-3 py-2 text-right">Δ followers</th>
-                  <th className="px-3 py-2">Videos publicados</th>
+                  <th className="px-3 py-2">Posts publicados</th>
                 </tr>
               </thead>
               <tbody>
@@ -279,9 +413,9 @@ export default function AccountPage({
       )}
 
       <section>
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-4 flex items-baseline justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
-            Videos
+            Posts ({sorted.length} de {videos.length})
           </h2>
           <div className="flex items-center gap-3">
             <button
@@ -297,9 +431,8 @@ export default function AccountPage({
                   setAnalyzeMsg(
                     `Procesados ${j.processed}, quedan ${j.remaining ?? "?"} por analizar.`,
                   );
-                  // Refresh table
                   const vRes = await fetch(
-                    `/api/accounts/${params.username}/videos?sort=${sort}&limit=500`,
+                    `/api/accounts/${params.username}/videos?sort=posted&limit=1000`,
                   );
                   setVideos((await vRes.json()).videos || []);
                 } catch (e) {
@@ -313,19 +446,6 @@ export default function AccountPage({
             >
               {analyzing ? "Analizando…" : "Analizar pendientes"}
             </button>
-            <label className="text-sm text-zinc-600">
-              Ordenar por&nbsp;
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortKey)}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-sm"
-              >
-                <option value="views">Vistas</option>
-                <option value="likes">Likes</option>
-                <option value="comments">Comentarios</option>
-                <option value="posted">Fecha</option>
-              </select>
-            </label>
           </div>
         </div>
         {analyzeMsg && (
@@ -334,30 +454,237 @@ export default function AccountPage({
           </div>
         )}
 
-        {videos.length === 0 ? (
+        {/* FILTER PANEL */}
+        <div className="mb-4 grid grid-cols-1 gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
+          <label className="flex flex-col text-xs">
+            <span className="mb-1 font-medium uppercase text-zinc-500">Tipo</span>
+            <select
+              value={filters.type}
+              onChange={(e) =>
+                setFilters({ ...filters, type: e.target.value })
+              }
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+            >
+              {TYPE_OPTIONS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col text-xs">
+            <span className="mb-1 font-medium uppercase text-zinc-500">Desde</span>
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={(e) =>
+                setFilters({ ...filters, dateFrom: e.target.value })
+              }
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="flex flex-col text-xs">
+            <span className="mb-1 font-medium uppercase text-zinc-500">Hasta</span>
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={(e) =>
+                setFilters({ ...filters, dateTo: e.target.value })
+              }
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="flex flex-col text-xs">
+            <span className="mb-1 font-medium uppercase text-zinc-500">
+              Buscar (caption · hook · CTA)
+            </span>
+            <input
+              type="text"
+              value={filters.search}
+              onChange={(e) =>
+                setFilters({ ...filters, search: e.target.value })
+              }
+              placeholder="palabra clave…"
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="flex flex-col text-xs">
+            <span className="mb-1 font-medium uppercase text-zinc-500">
+              Vistas mín
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={filters.minViews}
+              onChange={(e) =>
+                setFilters({ ...filters, minViews: Number(e.target.value) || 0 })
+              }
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="flex flex-col text-xs">
+            <span className="mb-1 font-medium uppercase text-zinc-500">
+              Likes mín
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={filters.minLikes}
+              onChange={(e) =>
+                setFilters({ ...filters, minLikes: Number(e.target.value) || 0 })
+              }
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="flex flex-col text-xs">
+            <span className="mb-1 font-medium uppercase text-zinc-500">
+              Comentarios mín
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={filters.minComments}
+              onChange={(e) =>
+                setFilters({
+                  ...filters,
+                  minComments: Number(e.target.value) || 0,
+                })
+              }
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <div className="flex flex-col gap-1 text-xs">
+            <span className="font-medium uppercase text-zinc-500">Misc</span>
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={filters.onlyAnalyzed}
+                onChange={(e) =>
+                  setFilters({ ...filters, onlyAnalyzed: e.target.checked })
+                }
+              />
+              <span>Solo analizados</span>
+            </label>
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={filters.onlyWithVideo}
+                onChange={(e) =>
+                  setFilters({ ...filters, onlyWithVideo: e.target.checked })
+                }
+              />
+              <span>Solo videos (excluye fotos)</span>
+            </label>
+          </div>
+          {allTags.length > 0 && (
+            <div className="col-span-full">
+              <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">
+                Format tags (AND){" "}
+                {filters.tags.length > 0 && (
+                  <button
+                    onClick={() => setFilters({ ...filters, tags: [] })}
+                    className="ml-2 text-blue-600 hover:underline"
+                  >
+                    limpiar
+                  </button>
+                )}
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {allTags.map((t) => {
+                  const active = filters.tags.includes(t);
+                  return (
+                    <button
+                      key={t}
+                      onClick={() =>
+                        setFilters({
+                          ...filters,
+                          tags: active
+                            ? filters.tags.filter((x) => x !== t)
+                            : [...filters.tags, t],
+                        })
+                      }
+                      className={`rounded px-2 py-0.5 text-xs ${
+                        active
+                          ? "bg-zinc-900 text-white"
+                          : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div className="col-span-full flex justify-between text-xs text-zinc-500">
+            <span>
+              Suma estimada de followers atribuidos al subset filtrado:{" "}
+              <strong className="text-zinc-800">{fmt(visibleAttribTotal)}</strong>
+            </span>
+            <button
+              onClick={() => setFilters(EMPTY_FILTERS)}
+              className="text-blue-600 hover:underline"
+            >
+              Limpiar filtros
+            </button>
+          </div>
+        </div>
+
+        {sorted.length === 0 ? (
           <div className="rounded-xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600">
-            No hay videos guardados para esta cuenta. Ve a{" "}
-            <Link href="/accounts" className="text-blue-600 hover:underline">
-              Cuentas
-            </Link>{" "}
-            y dale &quot;Scrape histórico&quot;.
+            Ningún post coincide con los filtros actuales.
           </div>
         ) : (
           <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm">
             <table className="w-full border-collapse text-sm">
               <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
                 <tr>
-                  <th className="px-3 py-2">Fecha</th>
+                  <Th
+                    label="Fecha"
+                    k="posted"
+                    sortKey={sort}
+                    dir={sortDir}
+                    onClick={toggleSort}
+                  />
                   <th className="px-3 py-2">Tipo</th>
-                  <th className="px-3 py-2 text-right">Vistas</th>
-                  <th className="px-3 py-2 text-right">Likes</th>
-                  <th className="px-3 py-2 text-right">Comments</th>
-                  <th className="px-3 py-2">Caption</th>
+                  <Th
+                    label="Vistas"
+                    k="views"
+                    sortKey={sort}
+                    dir={sortDir}
+                    onClick={toggleSort}
+                    align="right"
+                  />
+                  <Th
+                    label="Likes"
+                    k="likes"
+                    sortKey={sort}
+                    dir={sortDir}
+                    onClick={toggleSort}
+                    align="right"
+                  />
+                  <Th
+                    label="Coments"
+                    k="comments"
+                    sortKey={sort}
+                    dir={sortDir}
+                    onClick={toggleSort}
+                    align="right"
+                  />
+                  <Th
+                    label="Δ Followers est."
+                    k="estimated_followers"
+                    sortKey={sort}
+                    dir={sortDir}
+                    onClick={toggleSort}
+                    align="right"
+                  />
+                  <th className="px-3 py-2">Análisis / Caption</th>
                   <th className="px-3 py-2">Link</th>
                 </tr>
               </thead>
               <tbody>
-                {videos.map((v) => (
+                {sorted.map((v) => (
                   <tr
                     key={v.shortcode}
                     className="border-t border-zinc-100 hover:bg-zinc-50"
@@ -374,6 +701,22 @@ export default function AccountPage({
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {fmt(v.latest_comments)}
+                    </td>
+                    <td
+                      className={`px-3 py-2 text-right tabular-nums ${
+                        v.estimated_followers == null
+                          ? "text-zinc-400"
+                          : v.estimated_followers > 0
+                            ? "text-emerald-700"
+                            : v.estimated_followers < 0
+                              ? "text-red-700"
+                              : "text-zinc-600"
+                      }`}
+                      title="Followers estimados generados por este post (atribución proporcional a vistas dentro de su ventana de snapshot)"
+                    >
+                      {v.estimated_followers == null
+                        ? "—"
+                        : `${v.estimated_followers > 0 ? "+" : ""}${fmt(v.estimated_followers)}`}
                     </td>
                     <td
                       className="max-w-md px-3 py-2 text-zinc-700"
@@ -423,5 +766,36 @@ export default function AccountPage({
         )}
       </section>
     </main>
+  );
+}
+
+function Th({
+  label,
+  k,
+  sortKey,
+  dir,
+  onClick,
+  align,
+}: {
+  label: string;
+  k: SortKey;
+  sortKey: SortKey;
+  dir: "asc" | "desc";
+  onClick: (k: SortKey) => void;
+  align?: "right";
+}) {
+  const active = sortKey === k;
+  return (
+    <th
+      onClick={() => onClick(k)}
+      className={`cursor-pointer select-none px-3 py-2 ${
+        align === "right" ? "text-right" : ""
+      } ${active ? "text-zinc-900" : ""}`}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {active && <span>{dir === "asc" ? "▲" : "▼"}</span>}
+      </span>
+    </th>
   );
 }

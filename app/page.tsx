@@ -10,6 +10,53 @@ interface Account {
   last_full_scrape_at: string | null;
   video_count: number;
   followers_latest: number | null;
+  profile_pic_url: string | null;
+}
+
+function initials(s: string): string {
+  return s
+    .replace(/[^a-zA-Z0-9 ]/g, "")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]!.toUpperCase())
+    .join("") || s.slice(0, 2).toUpperCase();
+}
+
+function Avatar({
+  src,
+  fallback,
+  size = 48,
+}: {
+  src: string | null;
+  fallback: string;
+  size?: number;
+}) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) {
+    return (
+      <div
+        className="flex items-center justify-center rounded-full bg-gradient-to-br from-pink-400 via-purple-500 to-amber-500 text-sm font-semibold text-white shadow-inner"
+        style={{ width: size, height: size }}
+      >
+        {initials(fallback)}
+      </div>
+    );
+  }
+  return (
+    // Instagram CDN URLs aren't whitelisted in next/image, so use plain <img>.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={fallback}
+      width={size}
+      height={size}
+      onError={() => setBroken(true)}
+      referrerPolicy="no-referrer"
+      className="rounded-full object-cover shadow-inner"
+      style={{ width: size, height: size }}
+    />
+  );
 }
 
 function fmt(n: number | null | undefined): string {
@@ -109,15 +156,20 @@ function AccountGrid({ accounts }: { accounts: Account[] }) {
           href={`/account/${a.username}`}
           className="block rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-zinc-400"
         >
-          <div className="flex items-baseline justify-between">
-            <h3 className="text-lg font-semibold">@{a.username}</h3>
-            {a.is_pinned && (
-              <span className="text-xs text-amber-600">★ fijada</span>
-            )}
+          <div className="flex items-start gap-3">
+            <Avatar src={a.profile_pic_url} fallback={a.display_name || a.username} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline justify-between">
+                <h3 className="truncate text-lg font-semibold">@{a.username}</h3>
+                {a.is_pinned && (
+                  <span className="ml-2 shrink-0 text-xs text-amber-600">★ fijada</span>
+                )}
+              </div>
+              {a.display_name && (
+                <p className="truncate text-sm text-zinc-600">{a.display_name}</p>
+              )}
+            </div>
           </div>
-          {a.display_name && (
-            <p className="mt-0.5 text-sm text-zinc-600">{a.display_name}</p>
-          )}
           <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
             <div>
               <dt className="text-xs uppercase tracking-wide text-zinc-500">
@@ -129,7 +181,7 @@ function AccountGrid({ accounts }: { accounts: Account[] }) {
             </div>
             <div>
               <dt className="text-xs uppercase tracking-wide text-zinc-500">
-                Videos
+                Posts
               </dt>
               <dd className="font-medium tabular-nums">
                 {fmt(a.video_count)}

@@ -49,6 +49,7 @@ export async function ingestApifyItems(
     const update: Record<string, unknown> = {};
     if (profile.fullName) update.display_name = profile.fullName;
     if (profile.biography) update.bio = profile.biography;
+    if (profile.profilePicUrl) update.profile_pic_url = profile.profilePicUrl;
     if (Object.keys(update).length > 0) {
       await sb.from("accounts").update(update).eq("username", cleanUsername);
     }
