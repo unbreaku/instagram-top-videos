@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -27,6 +27,7 @@ interface Video {
   cta: string | null;
   format_tags: string[] | null;
   analyzed_at: string | null;
+  transcript: string | null;
   estimated_followers: number | null;
 }
 
@@ -128,6 +129,9 @@ export default function AccountPage({
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
+  const [tagSearch, setTagSearch] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -150,6 +154,17 @@ export default function AccountPage({
       cancelled = true;
     };
   }, [params.username]);
+
+  // Close tag dropdown on outside click.
+  useEffect(() => {
+    if (!tagDropdownOpen) return;
+    function onDoc(e: MouseEvent) {
+      const t = e.target as HTMLElement;
+      if (!t.closest?.("[data-tag-dropdown]")) setTagDropdownOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [tagDropdownOpen]);
 
   // Available tags inferred from the data — fed into the multi-select.
   const allTags = useMemo(() => {
@@ -289,9 +304,8 @@ export default function AccountPage({
         {detail.account.profile_pic_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={detail.account.profile_pic_url}
+            src={`/api/proxy-image?url=${encodeURIComponent(detail.account.profile_pic_url)}`}
             alt={detail.account.username}
-            referrerPolicy="no-referrer"
             className="h-16 w-16 rounded-full object-cover shadow-inner"
           />
         ) : null}
@@ -577,42 +591,98 @@ export default function AccountPage({
             </label>
           </div>
           {allTags.length > 0 && (
-            <div className="col-span-full">
+            <div className="col-span-full" data-tag-dropdown>
               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">
-                Format tags (AND){" "}
-                {filters.tags.length > 0 && (
-                  <button
-                    onClick={() => setFilters({ ...filters, tags: [] })}
-                    className="ml-2 text-blue-600 hover:underline"
-                  >
-                    limpiar
-                  </button>
-                )}
+                Format tags (todos los seleccionados deben estar)
               </span>
-              <div className="flex flex-wrap gap-1">
-                {allTags.map((t) => {
-                  const active = filters.tags.includes(t);
-                  return (
-                    <button
-                      key={t}
-                      onClick={() =>
-                        setFilters({
-                          ...filters,
-                          tags: active
-                            ? filters.tags.filter((x) => x !== t)
-                            : [...filters.tags, t],
-                        })
-                      }
-                      className={`rounded px-2 py-0.5 text-xs ${
-                        active
-                          ? "bg-zinc-900 text-white"
-                          : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  );
-                })}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setTagDropdownOpen((v) => !v)}
+                  className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white px-3 py-2 text-left text-sm hover:bg-zinc-50"
+                >
+                  <span className="truncate">
+                    {filters.tags.length === 0
+                      ? "Cualquier formato"
+                      : filters.tags.length <= 3
+                        ? filters.tags.join(", ")
+                        : `${filters.tags.length} seleccionados`}
+                  </span>
+                  <span className="ml-2 text-zinc-400">{tagDropdownOpen ? "▲" : "▼"}</span>
+                </button>
+                {tagDropdownOpen && (
+                  <div className="absolute left-0 right-0 z-20 mt-1 max-h-80 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg">
+                    <div className="border-b border-zinc-100 p-2">
+                      <input
+                        type="text"
+                        value={tagSearch}
+                        onChange={(e) => setTagSearch(e.target.value)}
+                        placeholder="Buscar formato…"
+                        className="w-full rounded border border-zinc-200 px-2 py-1 text-xs focus:border-zinc-900 focus:outline-none"
+                        autoFocus
+                      />
+                      <div className="mt-1 flex justify-between text-[10px] text-zinc-500">
+                        <button
+                          type="button"
+                          onClick={() => setFilters({ ...filters, tags: [] })}
+                          className="text-blue-600 hover:underline"
+                          disabled={filters.tags.length === 0}
+                        >
+                          Limpiar selección ({filters.tags.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTagDropdownOpen(false)}
+                          className="text-zinc-600 hover:underline"
+                        >
+                          Cerrar
+                        </button>
+                      </div>
+                    </div>
+                    <ul className="max-h-64 overflow-y-auto py-1 text-sm">
+                      {allTags
+                        .filter((t) =>
+                          tagSearch
+                            ? t.toLowerCase().includes(tagSearch.toLowerCase())
+                            : true,
+                        )
+                        .map((t) => {
+                          const checked = filters.tags.includes(t);
+                          return (
+                            <li key={t}>
+                              <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-zinc-50">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() =>
+                                    setFilters({
+                                      ...filters,
+                                      tags: checked
+                                        ? filters.tags.filter((x) => x !== t)
+                                        : [...filters.tags, t],
+                                    })
+                                  }
+                                  className="h-3 w-3"
+                                />
+                                <span className="font-mono text-xs text-zinc-700">
+                                  {t}
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      {allTags.filter((t) =>
+                        tagSearch
+                          ? t.toLowerCase().includes(tagSearch.toLowerCase())
+                          : true,
+                      ).length === 0 && (
+                        <li className="px-3 py-2 text-xs text-zinc-400">
+                          Sin coincidencias.
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -684,88 +754,149 @@ export default function AccountPage({
                 </tr>
               </thead>
               <tbody>
-                {sorted.map((v) => (
-                  <tr
-                    key={v.shortcode}
-                    className="border-t border-zinc-100 hover:bg-zinc-50"
-                  >
-                    <td className="whitespace-nowrap px-3 py-2 text-zinc-600">
-                      {fmtDate(v.posted_at)}
-                    </td>
-                    <td className="px-3 py-2">{v.type || "—"}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {fmt(v.latest_views)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {fmt(v.latest_likes)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {fmt(v.latest_comments)}
-                    </td>
-                    <td
-                      className={`px-3 py-2 text-right tabular-nums ${
-                        v.estimated_followers == null
-                          ? "text-zinc-400"
-                          : v.estimated_followers > 0
-                            ? "text-emerald-700"
-                            : v.estimated_followers < 0
-                              ? "text-red-700"
-                              : "text-zinc-600"
-                      }`}
-                      title="Followers estimados generados por este post (atribución proporcional a vistas dentro de su ventana de snapshot)"
-                    >
-                      {v.estimated_followers == null
-                        ? "—"
-                        : `${v.estimated_followers > 0 ? "+" : ""}${fmt(v.estimated_followers)}`}
-                    </td>
-                    <td
-                      className="max-w-md px-3 py-2 text-zinc-700"
-                      title={v.caption || ""}
-                    >
-                      {v.hook && (
-                        <div className="mb-1 text-xs font-semibold text-zinc-900">
-                          🎣 {v.hook}
-                        </div>
-                      )}
-                      <div className="text-zinc-700">
-                        {truncate(v.caption || "")}
-                      </div>
-                      {v.cta && (
-                        <div className="mt-1 text-xs italic text-zinc-600">
-                          → {v.cta}
-                        </div>
-                      )}
-                      {v.format_tags && v.format_tags.length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {v.format_tags.map((t) => (
-                            <span
-                              key={t}
-                              className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600"
+                {sorted.map((v) => {
+                  const isOpen = expanded.has(v.shortcode);
+                  const hasDetail =
+                    !!v.transcript || !!v.hook || !!v.cta || !!v.caption;
+                  return (
+                    <React.Fragment key={v.shortcode}>
+                      <tr className="border-t border-zinc-100 hover:bg-zinc-50">
+                        <td className="whitespace-nowrap px-3 py-2 text-zinc-600">
+                          {fmtDate(v.posted_at)}
+                        </td>
+                        <td className="px-3 py-2">{v.type || "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {fmt(v.latest_views)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {fmt(v.latest_likes)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {fmt(v.latest_comments)}
+                        </td>
+                        <td
+                          className={`px-3 py-2 text-right tabular-nums ${
+                            v.estimated_followers == null
+                              ? "text-zinc-400"
+                              : v.estimated_followers > 0
+                                ? "text-emerald-700"
+                                : v.estimated_followers < 0
+                                  ? "text-red-700"
+                                  : "text-zinc-600"
+                          }`}
+                          title="Followers estimados generados por este post (atribución proporcional a vistas dentro de su ventana de snapshot)"
+                        >
+                          {v.estimated_followers == null
+                            ? "—"
+                            : `${v.estimated_followers > 0 ? "+" : ""}${fmt(v.estimated_followers)}`}
+                        </td>
+                        <td
+                          className="max-w-md px-3 py-2 text-zinc-700"
+                          title={v.caption || ""}
+                        >
+                          {v.hook && (
+                            <div className="mb-1 text-xs font-semibold text-zinc-900">
+                              🎣 {v.hook}
+                            </div>
+                          )}
+                          <div className="text-zinc-700">
+                            {truncate(v.caption || "", 120)}
+                          </div>
+                          {v.cta && (
+                            <div className="mt-1 text-xs italic text-zinc-600">
+                              → {v.cta}
+                            </div>
+                          )}
+                          {v.format_tags && v.format_tags.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {v.format_tags.map((t) => (
+                                <span
+                                  key={t}
+                                  className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600"
+                                >
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {hasDetail && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = new Set(expanded);
+                                if (isOpen) next.delete(v.shortcode);
+                                else next.add(v.shortcode);
+                                setExpanded(next);
+                              }}
+                              className="mt-2 text-[11px] text-blue-600 hover:underline"
                             >
-                              {t}
-                            </span>
-                          ))}
-                        </div>
+                              {isOpen ? "▲ Ocultar transcript" : "▼ Ver transcript / detalle"}
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <a
+                            href={v.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            Ver
+                          </a>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="bg-zinc-50">
+                          <td colSpan={8} className="px-3 py-4">
+                            <div className="space-y-3 text-sm">
+                              {v.hook && (
+                                <Block label="Hook">{v.hook}</Block>
+                              )}
+                              {v.cta && (
+                                <Block label="CTA">{v.cta}</Block>
+                              )}
+                              {v.caption && (
+                                <Block label="Caption original">{v.caption}</Block>
+                              )}
+                              <Block label="Transcript">
+                                {v.transcript ? (
+                                  <span className="whitespace-pre-wrap">
+                                    {v.transcript}
+                                  </span>
+                                ) : (
+                                  <span className="text-zinc-400">
+                                    Sin transcript. {v.analyzed_at
+                                      ? "(El video probablemente no tiene audio detectable o el URL de Apify expiró antes de la transcripción.)"
+                                      : "Dale 'Analizar pendientes' para procesarlo."}
+                                  </span>
+                                )}
+                              </Block>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="px-3 py-2">
-                      <a
-                        href={v.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
-                        Ver
-                      </a>
-                    </td>
-                  </tr>
-                ))}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </section>
     </main>
+  );
+}
+
+function Block({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+        {label}
+      </div>
+      <div className="rounded-md border border-zinc-200 bg-white p-3 text-sm text-zinc-800">
+        {children}
+      </div>
+    </div>
   );
 }
 

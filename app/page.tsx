@@ -43,16 +43,17 @@ function Avatar({
       </div>
     );
   }
+  // Instagram CDN refuses cross-origin hotlinking, so we proxy through our
+  // own /api/proxy-image which fetches server-side and caches for 24h.
+  const proxied = `/api/proxy-image?url=${encodeURIComponent(src)}`;
   return (
-    // Instagram CDN URLs aren't whitelisted in next/image, so use plain <img>.
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={src}
+      src={proxied}
       alt={fallback}
       width={size}
       height={size}
       onError={() => setBroken(true)}
-      referrerPolicy="no-referrer"
       className="rounded-full object-cover shadow-inner"
       style={{ width: size, height: size }}
     />
