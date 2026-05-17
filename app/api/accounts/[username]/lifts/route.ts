@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase";
+import { attributeDelta, postImpact } from "@/lib/impact";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +28,7 @@ export async function GET(_req: Request, { params }: Params) {
     sb
       .from("videos")
       .select(
-        "shortcode, url, type, posted_at, caption, hook, latest_views, latest_likes",
+        "shortcode, url, type, posted_at, caption, hook, latest_views, latest_likes, latest_comments",
       )
       .eq("account_username", username)
       .not("posted_at", "is", null)
@@ -47,6 +48,7 @@ export async function GET(_req: Request, { params }: Params) {
     hook: string | null;
     latest_views: number | null;
     latest_likes: number | null;
+    latest_comments: number | null;
   }>;
 
   // Build day-bucketed snapshots (last snapshot of each calendar day).
@@ -74,30 +76,57 @@ export async function GET(_req: Request, { params }: Params) {
     a.date.localeCompare(b.date),
   );
 
-  // Compute deltas between consecutive days.
+  // Compute deltas between consecutive days, and within each day split the
+  // delta across that day's posts using the composite impact score (so a
+  // photo with 0 views still gets a share if it earned likes/comments).
+  // Each video entry includes:
+  //   - impact:   the raw score used for the split (debug-visible)
+  //   - share:    fraction of the day's delta (0..1, useful for "weight" bars)
+  //   - attributed_followers: integer followers attributed to this post
+  //                           (null on day 1 — no prev snapshot to diff against)
+  type DayVideo = (typeof vids)[number] & {
+    impact: number;
+    share: number;
+    attributed_followers: number | null;
+  };
   const lifts: Array<{
     date: string;
     followers: number;
     delta: number | null;
-    videos: typeof vids;
+    videos: DayVideo[];
   }> = [];
 
   for (let i = 0; i < dayList.length; i++) {
     const day = dayList[i];
     const prev = i > 0 ? dayList[i - 1] : null;
     const delta = prev ? day.followers - prev.followers : null;
-    // Find videos posted between prev.capturedAt and day.capturedAt.
     const windowStart = prev ? new Date(prev.capturedAt).getTime() : 0;
     const windowEnd = new Date(day.capturedAt).getTime();
     const dayVids = vids.filter((v) => {
       const t = new Date(v.posted_at).getTime();
       return t > windowStart && t <= windowEnd;
     });
+    // If we have a delta, split it; otherwise impact/share are still useful
+    // for showing relative weight even without a follower number.
+    const shares =
+      delta != null && dayVids.length > 0
+        ? attributeDelta(delta, dayVids)
+        : new Map<string, number>();
+    const totalImpact = dayVids.reduce((s, v) => s + postImpact(v), 0);
+    const enriched: DayVideo[] = dayVids.map((v) => {
+      const imp = postImpact(v);
+      return {
+        ...v,
+        impact: imp,
+        share: totalImpact > 0 ? imp / totalImpact : 1 / Math.max(1, dayVids.length),
+        attributed_followers: delta != null ? (shares.get(v.shortcode) ?? 0) : null,
+      };
+    });
     lifts.push({
       date: day.date,
       followers: day.followers,
       delta,
-      videos: dayVids,
+      videos: enriched,
     });
   }
 

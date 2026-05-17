@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase";
+import { attributeDelta } from "@/lib/impact";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,15 +36,27 @@ interface SnapshotRow {
 
 /**
  * Estimates how many of an account's daily follower deltas can be attributed
- * to each video posted in that 24h window. Weighted by views — videos with
- * more views absorb a larger share. If views are zero/missing we fall back
- * to equal split. Returns a shortcode → followers map.
+ * to each post in that snapshot window. Weighted by a composite IMPACT score
+ * (views + likes + comments) — see lib/impact.ts — so that photo/sidecar
+ * posts with no views still receive a share proportional to their engagement.
+ *
+ * Returns:
+ *   - attribution: shortcode → integer followers attributed
+ *   - inWindowSet: shortcodes that fell into at least one snapshot window.
+ *     Posts NOT in this set should render as "—" (no measurement possible)
+ *     instead of "0" (measurable but no impact). This distinction matters:
+ *     a brand-new account with no prior snapshot can't attribute *any* of
+ *     its historical posts, and lumping them in with "0" is misleading.
  */
 function attributeFollowers(
-  videos: Pick<VideoRow, "shortcode" | "posted_at" | "latest_views">[],
+  videos: Pick<
+    VideoRow,
+    "shortcode" | "posted_at" | "latest_views" | "latest_likes" | "latest_comments"
+  >[],
   snapshots: SnapshotRow[],
-): Map<string, number> {
-  const map = new Map<string, number>();
+): { attribution: Map<string, number>; inWindowSet: Set<string> } {
+  const attribution = new Map<string, number>();
+  const inWindowSet = new Set<string>();
   const snaps = snapshots
     .filter((s) => typeof s.followers_count === "number")
     .sort((a, b) => a.captured_at.localeCompare(b.captured_at));
@@ -60,24 +73,18 @@ function attributeFollowers(
       return t > windowStart && t <= windowEnd;
     });
     if (inWindow.length === 0) continue;
-    const totalViews = inWindow.reduce(
-      (s, v) => s + (v.latest_views || 0),
-      0,
-    );
-    for (const v of inWindow) {
-      const share =
-        totalViews > 0
-          ? ((v.latest_views || 0) / totalViews) * delta
-          : delta / inWindow.length;
-      // ACCUMULATE — a video that falls inside multiple snapshot windows
-      // (e.g. when the cron runs more than once a day, or when "Refrescar
-      // últimos 10" is hit several times in a row) should sum each window's
-      // attributed share, not overwrite with only the last one.
-      const prev = map.get(v.shortcode) ?? 0;
-      map.set(v.shortcode, Math.round(prev + share));
+    for (const v of inWindow) inWindowSet.add(v.shortcode);
+    const shares = attributeDelta(delta, inWindow);
+    // ACCUMULATE — a video that falls inside multiple snapshot windows
+    // (e.g. when the cron runs more than once a day, or when "Refrescar
+    // últimos 10" is hit several times in a row) should sum each window's
+    // attributed share, not overwrite with only the last one.
+    for (const [sc, share] of shares) {
+      const cur = attribution.get(sc) ?? 0;
+      attribution.set(sc, cur + share);
     }
   }
-  return map;
+  return { attribution, inWindowSet };
 }
 
 export async function GET(req: Request, { params }: Params) {
@@ -135,11 +142,20 @@ export async function GET(req: Request, { params }: Params) {
 
   const videos = (videosRes.data || []) as VideoRow[];
   const snapshots = (snapshotsRes.data || []) as SnapshotRow[];
-  const attribution = attributeFollowers(videos, snapshots);
+  const { attribution, inWindowSet } = attributeFollowers(videos, snapshots);
 
+  // estimated_followers semantics:
+  //   number  → post fell in ≥1 snapshot window; this is its accumulated
+  //             share (positive or negative or 0)
+  //   null    → post pre-dates first snapshot, or falls between snapshots
+  //             that never executed → attribution is "not measurable"
+  // The client renders null as "—" and 0 as "0", which used to look the
+  // same and led to "atribución no funciona" complaints.
   const out = videos.map((v) => ({
     ...v,
-    estimated_followers: attribution.get(v.shortcode) ?? null,
+    estimated_followers: inWindowSet.has(v.shortcode)
+      ? (attribution.get(v.shortcode) ?? 0)
+      : null,
   }));
 
   return NextResponse.json({ videos: out });

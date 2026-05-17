@@ -64,6 +64,10 @@ interface DailyLift {
     hook: string | null;
     latest_views: number | null;
     latest_likes: number | null;
+    latest_comments: number | null;
+    impact: number;
+    share: number;
+    attributed_followers: number | null;
   }>;
 }
 
@@ -431,88 +435,133 @@ export default function AccountPage({
         <section className="mb-10">
           <details className="rounded-xl border border-zinc-200 bg-white shadow-sm">
             <summary className="cursor-pointer p-4 text-sm font-semibold uppercase tracking-wide text-zinc-500 hover:bg-zinc-50">
-              Crecimiento diario · videos atribuibles ({lifts.length} días)
+              Crecimiento diario · followers atribuidos ({lifts.length} días)
               <span className="ml-2 text-[10px] font-normal normal-case text-zinc-400">
                 Click para expandir/cerrar
               </span>
             </summary>
-            <div className="border-t border-zinc-100 p-2">
-              <p className="mb-2 px-2 text-xs text-zinc-500">
-                Cada fila = un día del cron. Muestra cuántos followers ganó (o
-                perdió) la cuenta y qué posts se publicaron en esa ventana —
-                pista de cuál fue responsable del lift.
-              </p>
-          <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm">
-            <table className="w-full border-collapse text-sm">
-              <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
-                <tr>
-                  <th className="px-3 py-2">Fecha</th>
-                  <th className="px-3 py-2 text-right">Followers</th>
-                  <th className="px-3 py-2 text-right">Δ followers</th>
-                  <th className="px-3 py-2">Posts publicados</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lifts.map((l) => (
-                  <tr
-                    key={l.date}
-                    className="border-t border-zinc-100 align-top hover:bg-zinc-50"
-                  >
-                    <td className="whitespace-nowrap px-3 py-2 text-zinc-700">
-                      {l.date}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {fmt(l.followers)}
-                    </td>
-                    <td
-                      className={`px-3 py-2 text-right tabular-nums ${
-                        l.delta == null
-                          ? "text-zinc-400"
-                          : l.delta > 0
-                            ? "text-emerald-700"
-                            : l.delta < 0
-                              ? "text-red-700"
-                              : "text-zinc-600"
-                      }`}
-                    >
-                      {l.delta == null
-                        ? "—"
-                        : `${l.delta > 0 ? "+" : ""}${fmt(l.delta)}`}
-                    </td>
-                    <td className="px-3 py-2">
-                      {l.videos.length === 0 ? (
-                        <span className="text-xs text-zinc-400">ninguno</span>
-                      ) : (
-                        <ul className="space-y-1">
-                          {l.videos.map((v) => (
-                            <li key={v.shortcode} className="text-xs">
-                              <a
-                                href={v.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-blue-600 hover:underline"
-                              >
-                                {v.type || "Post"} ·{" "}
-                                {fmt(v.latest_views)} vistas
-                              </a>
-                              {v.hook && (
-                                <span className="text-zinc-600">
-                                  {" — "}
-                                  {v.hook.length > 80
-                                    ? v.hook.slice(0, 79) + "…"
-                                    : v.hook}
-                                </span>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            <div className="border-t border-zinc-100 p-4 space-y-3">
+              <div className="rounded-lg bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-700">
+                <p className="mb-1 font-semibold text-zinc-800">
+                  ¿Qué hace este panel?
+                </p>
+                <p className="mb-2">
+                  Cada fila es <strong>un día calendario en horario Madrid</strong>.
+                  Tomamos dos snapshots (ayer y hoy), calculamos Δ followers,
+                  y lo repartimos entre los posts publicados en esa ventana
+                  proporcional a su <strong>impacto</strong> (vistas + likes×5 +
+                  comments×25 para videos; likes×25 + comments×100 para fotos).
+                  Así una foto que sumó likes igual recibe parte del crédito,
+                  no solo el reel con más vistas.
+                </p>
+                <p className="text-zinc-500">
+                  <strong>—</strong> = sin medición (no hay snapshot previo, p.
+                  ej. primer día de la cuenta) · <strong>0</strong> = post
+                  publicado pero impacto marginal frente a los demás del día.
+                </p>
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white">
+                <table className="w-full border-collapse text-sm">
+                  <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
+                    <tr>
+                      <th className="px-3 py-2">Fecha</th>
+                      <th className="px-3 py-2 text-right">Followers</th>
+                      <th className="px-3 py-2 text-right">Δ followers</th>
+                      <th className="px-3 py-2">Reparto entre posts del día</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lifts.map((l) => (
+                      <tr
+                        key={l.date}
+                        className="border-t border-zinc-100 align-top hover:bg-zinc-50"
+                      >
+                        <td className="whitespace-nowrap px-3 py-2 text-zinc-700">
+                          {l.date}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {fmt(l.followers)}
+                        </td>
+                        <td
+                          className={`px-3 py-2 text-right tabular-nums font-semibold ${
+                            l.delta == null
+                              ? "text-zinc-400"
+                              : l.delta > 0
+                                ? "text-emerald-700"
+                                : l.delta < 0
+                                  ? "text-red-700"
+                                  : "text-zinc-600"
+                          }`}
+                        >
+                          {l.delta == null
+                            ? "—"
+                            : `${l.delta > 0 ? "+" : ""}${fmt(l.delta)}`}
+                        </td>
+                        <td className="px-3 py-2">
+                          {l.videos.length === 0 ? (
+                            <span className="text-xs text-zinc-400">
+                              ningún post publicado este día
+                            </span>
+                          ) : (
+                            <ul className="space-y-1.5">
+                              {l.videos.map((v) => {
+                                const pct = Math.round(v.share * 100);
+                                const att = v.attributed_followers;
+                                return (
+                                  <li
+                                    key={v.shortcode}
+                                    className="flex items-start gap-2 text-xs"
+                                  >
+                                    <span
+                                      className={`shrink-0 rounded px-1.5 py-0.5 font-mono tabular-nums ${
+                                        att == null
+                                          ? "bg-zinc-100 text-zinc-400"
+                                          : att > 0
+                                            ? "bg-emerald-50 text-emerald-700"
+                                            : att < 0
+                                              ? "bg-red-50 text-red-700"
+                                              : "bg-zinc-100 text-zinc-500"
+                                      }`}
+                                      title={`Impacto: ${fmt(v.impact)} (${pct}% del día)`}
+                                    >
+                                      {att == null
+                                        ? "—"
+                                        : `${att > 0 ? "+" : ""}${fmt(att)}`}
+                                    </span>
+                                    <span className="text-zinc-400">
+                                      {pct}%
+                                    </span>
+                                    <a
+                                      href={v.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-blue-600 hover:underline"
+                                    >
+                                      {v.type || "Post"} ·{" "}
+                                      {v.latest_views == null
+                                        ? "sin views"
+                                        : `${fmt(v.latest_views)} vistas`}
+                                      {" · "}
+                                      {fmt(v.latest_likes)} likes
+                                    </a>
+                                    {v.hook && (
+                                      <span className="text-zinc-600">
+                                        — {v.hook.length > 80
+                                          ? v.hook.slice(0, 79) + "…"
+                                          : v.hook}
+                                      </span>
+                                    )}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </details>
         </section>
@@ -920,7 +969,14 @@ export default function AccountPage({
                                   ? "text-red-700"
                                   : "text-zinc-600"
                           }`}
-                          title="Followers estimados generados por este post (atribución proporcional a vistas dentro de su ventana de snapshot)"
+                          title={`Followers estimados que generó este post.
+Reparto = Δ followers del día × (impacto del post / impacto total del día).
+Impacto = vistas + likes×5 + comments×25 (videos) o likes×25 + comments×100 (fotos sin views).
+
+Símbolos:
+  +N  → recibió N followers
+  0   → publicado en ventana medible pero impacto marginal
+  —   → no medible (publicado antes del primer snapshot, o sin snapshot vecino)`}
                         >
                           {v.estimated_followers == null
                             ? "—"
