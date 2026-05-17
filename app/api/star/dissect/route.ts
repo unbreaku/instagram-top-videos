@@ -52,6 +52,27 @@ export async function POST() {
     );
   }
 
+  // HARD GUARD: refuse to run the dissection while any of the star's videos
+  // with video_url still lack a transcript. The DNA analysis is only as good
+  // as the corpus that feeds it — running on 10/200 transcribed posts gives
+  // misleading pillars and voice signatures.
+  const { count: pending } = await sb
+    .from("videos")
+    .select("shortcode", { count: "exact", head: true })
+    .eq("account_username", star.username)
+    .not("video_url", "is", null)
+    .is("transcript", null);
+  const pendingCount = pending ?? 0;
+  if (pendingCount > 0) {
+    return NextResponse.json(
+      {
+        error: `La cuenta estrella tiene ${pendingCount} transcripts pendientes. Drenalos primero (en /accounts → Drenar pendientes, o el botón per-cuenta 🔥 Forzar) para que la disección use el corpus completo.`,
+        pending_transcripts: pendingCount,
+      },
+      { status: 400 },
+    );
+  }
+
   // Pull the corpus. We include only posts with at least a hook OR caption OR
   // transcript so the LLM has something to work with. No 90d window for star.
   const { data: videos, error } = await sb

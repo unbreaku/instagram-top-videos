@@ -37,6 +37,13 @@ interface ApiResponse {
     profile_pic_url: string | null;
   };
   recipes: RecipesPayload | null;
+  warning?: string | null;
+}
+
+interface ReadinessRow {
+  username: string;
+  pending: number;
+  done: number;
 }
 
 function fmt(n: number): string {
@@ -65,15 +72,43 @@ export default function RecipesPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [starReadiness, setStarReadiness] = useState<ReadinessRow | null>(null);
+  const [guideTotalPending, setGuideTotalPending] = useState(0);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch("/api/recipes");
-      const j = await r.json();
-      if (!r.ok) setError(j.error || `HTTP ${r.status}`);
-      else setData(j);
+      const [rRes, statsRes] = await Promise.all([
+        fetch("/api/recipes"),
+        fetch("/api/transcript-stats"),
+      ]);
+      const rJ = await rRes.json();
+      const sJ = await statsRes.json();
+      if (!rRes.ok) setError(rJ.error || `HTTP ${rRes.status}`);
+      else setData(rJ);
+
+      // Compute readiness: star block + guide soft warning
+      if (statsRes.ok && rJ?.account?.username) {
+        const me = (sJ.accounts ?? []).find(
+          (a: { username: string }) => a.username === rJ.account.username,
+        );
+        if (me) {
+          setStarReadiness({
+            username: me.username,
+            pending: me.transcripts_pending ?? 0,
+            done: me.transcripts_done ?? 0,
+          });
+        }
+        const guidesPending = (sJ.accounts ?? [])
+          .filter((a: { username: string }) => a.username !== rJ.account.username)
+          .reduce(
+            (s: number, a: { transcripts_pending?: number }) =>
+              s + (a.transcripts_pending ?? 0),
+            0,
+          );
+        setGuideTotalPending(guidesPending);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -147,12 +182,48 @@ export default function RecipesPage() {
         </div>
         <button
           onClick={generate}
-          disabled={busy}
-          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+          disabled={busy || (starReadiness !== null && starReadiness.pending > 0)}
+          title={
+            starReadiness && starReadiness.pending > 0
+              ? `Faltan ${starReadiness.pending} transcripts del star. Drená primero.`
+              : undefined
+          }
+          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? "Generando…" : payload ? "Regenerar recetas" : "Generar recetas ahora"}
         </button>
       </header>
+
+      {/* READINESS gate */}
+      {starReadiness && starReadiness.pending > 0 && (
+        <section className="mt-6 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm">
+          <p className="font-semibold text-amber-900">
+            ⚠ Faltan {starReadiness.pending} transcripts de la cuenta estrella
+          </p>
+          <p className="mt-1 text-amber-800">
+            Las recetas se construyen sobre el DNA del star. Sin esos transcripts el DNA queda parcial.{" "}
+            <a href="/star" className="underline">
+              Andá a /star
+            </a>{" "}
+            para drenarlos.
+          </p>
+        </section>
+      )}
+      {starReadiness?.pending === 0 && guideTotalPending > 0 && (
+        <section className="mt-6 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">
+          ℹ {guideTotalPending} transcripts de guides pendientes. Las recetas
+          funcionan igual pero la cobertura del análisis de gaps no es 100%.{" "}
+          <a href="/accounts" className="underline">
+            Drenar guides en /accounts
+          </a>
+          .
+        </section>
+      )}
+      {payload && data?.warning && (
+        <section className="mt-6 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+          ⚠ {data.warning}
+        </section>
+      )}
 
       {!payload ? (
         <div className="mt-8 rounded-md border border-dashed border-zinc-300 bg-zinc-50 p-6 text-sm text-zinc-600">

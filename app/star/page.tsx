@@ -59,20 +59,52 @@ function proxied(url: string | null | undefined): string | undefined {
   return `/api/proxy-image?url=${encodeURIComponent(url)}`;
 }
 
+interface ReadinessInfo {
+  username: string;
+  pending: number;
+  done: number;
+  no_audio: number;
+  failed: number;
+}
+
 export default function StarPage() {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [readiness, setReadiness] = useState<ReadinessInfo | null>(null);
+  const [draining, setDraining] = useState(false);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch("/api/star/dissect");
-      const j = await r.json();
-      if (!r.ok) setError(j.error || `HTTP ${r.status}`);
-      else setData(j);
+      const [dRes, statsRes] = await Promise.all([
+        fetch("/api/star/dissect"),
+        fetch("/api/transcript-stats"),
+      ]);
+      const dJ = await dRes.json();
+      const sJ = await statsRes.json();
+      if (!dRes.ok) {
+        setError(dJ.error || `HTTP ${dRes.status}`);
+      } else {
+        setData(dJ);
+      }
+      // Find this star's row in the transcript stats
+      if (statsRes.ok && dJ?.account?.username) {
+        const me = (sJ.accounts ?? []).find(
+          (a: { username: string }) => a.username === dJ.account.username,
+        );
+        if (me) {
+          setReadiness({
+            username: me.username,
+            pending: me.transcripts_pending ?? 0,
+            done: me.transcripts_done ?? 0,
+            no_audio: me.transcripts_no_audio ?? 0,
+            failed: me.transcripts_failed ?? 0,
+          });
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -83,6 +115,36 @@ export default function StarPage() {
   useEffect(() => {
     load();
   }, []);
+
+  // Auto-poll readiness while draining to update counts live.
+  useEffect(() => {
+    if (!draining) return;
+    const id = setInterval(load, 6000);
+    return () => clearInterval(id);
+  }, [draining]);
+
+  async function drainStarTranscripts() {
+    if (!readiness) return;
+    setDraining(true);
+    try {
+      await fetch(
+        `/api/analyze-drain?account=${encodeURIComponent(readiness.username)}`,
+        { method: "POST" },
+      );
+      // Polling effect will refresh readiness. Stop draining flag when count
+      // hits 0.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setDraining(false);
+    }
+  }
+
+  // Stop the drain poll loop once pending hits 0.
+  useEffect(() => {
+    if (draining && readiness && readiness.pending === 0) {
+      setDraining(false);
+    }
+  }, [readiness, draining]);
 
   async function runDissection() {
     if (
@@ -169,12 +231,71 @@ export default function StarPage() {
         </div>
         <button
           onClick={runDissection}
-          disabled={busy}
-          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+          disabled={busy || (readiness !== null && readiness.pending > 0)}
+          title={
+            readiness !== null && readiness.pending > 0
+              ? `Faltan ${readiness.pending} transcripts. Drená primero.`
+              : undefined
+          }
+          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? "Analizando…" : dissection ? "Re-correr análisis" : "Correr análisis ahora"}
         </button>
       </header>
+
+      {/* READINESS panel: blocks dissection until all transcripts done */}
+      {readiness && (
+        <section
+          className={`mt-6 rounded-xl border p-4 ${
+            readiness.pending > 0
+              ? "border-amber-300 bg-amber-50"
+              : "border-emerald-300 bg-emerald-50"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 text-sm">
+              {readiness.pending > 0 ? (
+                <>
+                  <p className="font-semibold text-amber-900">
+                    ⚠ Faltan {readiness.pending} transcripts de la cuenta estrella
+                  </p>
+                  <p className="mt-1 text-amber-800">
+                    El análisis DNA se construye sobre el corpus completo. Si
+                    corre con transcripts parciales, los pilares y la voz van a
+                    salir incompletos. Drená primero.
+                  </p>
+                  <p className="mt-2 text-xs text-amber-700">
+                    Estado actual: {readiness.done} ✅ hechos ·{" "}
+                    {readiness.pending} ⏳ pendientes
+                    {readiness.no_audio > 0 && ` · ${readiness.no_audio} 🔇 sin audio`}
+                    {readiness.failed > 0 && ` · ${readiness.failed} ❌ fallidos`}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-semibold text-emerald-900">
+                    ✓ Corpus listo para diseccionar
+                  </p>
+                  <p className="mt-1 text-xs text-emerald-700">
+                    {readiness.done} transcripts hechos
+                    {readiness.no_audio > 0 && ` · ${readiness.no_audio} sin audio detectable`}
+                    {readiness.failed > 0 && ` · ${readiness.failed} fallidos (ignorados)`}
+                  </p>
+                </>
+              )}
+            </div>
+            {readiness.pending > 0 && (
+              <button
+                onClick={drainStarTranscripts}
+                disabled={draining}
+                className="shrink-0 rounded-md bg-amber-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-800 disabled:opacity-50"
+              >
+                {draining ? "Drenando… (auto-refresh)" : "Drenar pendientes ahora"}
+              </button>
+            )}
+          </div>
+        </section>
+      )}
 
       {!dissection ? (
         <div className="mt-8 rounded-md border border-dashed border-zinc-300 bg-zinc-50 p-6 text-sm text-zinc-600">
