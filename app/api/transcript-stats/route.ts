@@ -163,6 +163,47 @@ export async function GET() {
     .limit(1)
     .maybeSingle();
 
+  // "Actividad reciente": last 20 videos that the back has touched, success
+  // or fail. This gives the user a live window into what the chain is doing
+  // when it runs silently — no DevTools needed.
+  // Two sources:
+  //   - Recent successes: videos with transcribed_at OR analyzed_at in last hour
+  //   - Recent failures: videos with non-null analyze_error
+  // We pick the most recent timestamp per row and sort.
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { data: recentRows } = await sb
+    .from("videos")
+    .select(
+      "shortcode, account_username, transcript, analyzed_at, transcribed_at, analyze_error, analyze_attempts",
+    )
+    .or(
+      `analyzed_at.gte.${oneHourAgo},transcribed_at.gte.${oneHourAgo},analyze_error.not.is.null`,
+    )
+    .order("analyzed_at", { ascending: false, nullsFirst: false })
+    .limit(20);
+  const recentActivity = (recentRows || []).map((r) => {
+    const ts =
+      (r as { analyzed_at: string | null }).analyzed_at ||
+      (r as { transcribed_at: string | null }).transcribed_at ||
+      null;
+    const hasTranscript = !!(r as { transcript: string | null }).transcript;
+    const err = (r as { analyze_error: string | null }).analyze_error;
+    const attempts =
+      (r as { analyze_attempts: number | null }).analyze_attempts ?? 0;
+    return {
+      shortcode: (r as { shortcode: string }).shortcode,
+      account: (r as { account_username: string }).account_username,
+      ts,
+      status: err
+        ? "error"
+        : hasTranscript
+          ? "ok"
+          : "pending",
+      attempts,
+      error: err ? err.slice(0, 180) : null,
+    };
+  });
+
   return NextResponse.json({
     policy: {
       window_days: WINDOW_DAYS,
@@ -179,5 +220,6 @@ export async function GET() {
       last_analyzed_at: lastRow?.analyzed_at ?? null,
       is_active: (recentAnalyses ?? 0) > 0,
     },
+    recent_activity: recentActivity,
   });
 }

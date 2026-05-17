@@ -107,6 +107,14 @@ export default function AccountsPage() {
       last_analyzed_at: string | null;
       is_active: boolean;
     };
+    recent_activity?: Array<{
+      shortcode: string;
+      account: string;
+      ts: string | null;
+      status: "ok" | "error" | "pending";
+      attempts: number;
+      error: string | null;
+    }>;
   } | null>(null);
   // Last response from /api/analyze-drain, kept for in-page diagnostics so
   // the user doesn't need to open DevTools.
@@ -791,6 +799,65 @@ export default function AccountsPage() {
                   </div>
                 )
               )}
+              {transcriptStats.recent_activity &&
+                transcriptStats.recent_activity.length > 0 && (
+                  <details className="rounded-md border border-zinc-200 bg-white p-3 text-xs" open>
+                    <summary className="cursor-pointer font-semibold uppercase tracking-wide text-zinc-600">
+                      Actividad reciente del back ·{" "}
+                      <span className="text-zinc-500 normal-case">
+                        últimos {transcriptStats.recent_activity.length} videos
+                        tocados (auto-refresh cada 8s mientras está activo)
+                      </span>
+                    </summary>
+                    <ul className="mt-2 max-h-64 overflow-y-auto space-y-1">
+                      {transcriptStats.recent_activity.map((a) => (
+                        <li
+                          key={a.shortcode + (a.ts || "")}
+                          className="flex items-start gap-2 font-mono"
+                        >
+                          <span className="shrink-0 text-zinc-400 w-20 text-right">
+                            {a.ts
+                              ? new Date(a.ts).toLocaleTimeString("es-ES", {
+                                  timeZone: "Europe/Madrid",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                })
+                              : "—"}
+                          </span>
+                          <span
+                            className={`shrink-0 ${
+                              a.status === "ok"
+                                ? "text-emerald-700"
+                                : a.status === "error"
+                                  ? "text-red-700"
+                                  : "text-zinc-400"
+                            }`}
+                          >
+                            {a.status === "ok"
+                              ? "✅"
+                              : a.status === "error"
+                                ? "❌"
+                                : "⏳"}
+                          </span>
+                          <span className="shrink-0 text-zinc-700">
+                            @{a.account}/{a.shortcode}
+                          </span>
+                          {a.attempts > 0 && (
+                            <span className="shrink-0 text-zinc-400">
+                              [{a.attempts}/3]
+                            </span>
+                          )}
+                          {a.error && (
+                            <span className="text-red-600 break-words">
+                              — {a.error}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               {lastDrainResponse && (
                 <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs">
                   <div className="mb-2 font-semibold uppercase tracking-wide text-zinc-600">
