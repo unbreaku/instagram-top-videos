@@ -98,23 +98,36 @@ export async function POST(req: Request) {
     }
   }
 
+  // SELF-HEAL: normalize any transcript='' rows to NULL at the start of every
+  // drain call. The stats endpoint uses !!transcript (treats '' as missing)
+  // but the SQL filter `.is('transcript', null)` skips empty strings,
+  // creating a ghost-pending state. This UPDATE makes both filters agree.
+  //
+  // It's cheap (only touches rows that are actually empty strings, usually 0
+  // after the first call) and removes the dependency on a one-shot migration
+  // being applied by the user. PostgREST's `.or()` with empty-string equality
+  // proved unreliable, so we normalize the data instead of filtering both
+  // shapes.
+  let normalized = 0;
+  try {
+    const { data: normRows } = await sb
+      .from("videos")
+      .update({ transcript: null, analyze_attempts: 0, analyze_error: null })
+      .eq("transcript", "")
+      .select("shortcode");
+    normalized = (normRows || []).length;
+  } catch {
+    // Non-fatal — the worst case is the drain still doesn't see them.
+  }
+
   // Filter on TRANSCRIPT (not analyzed_at) because that's what stats counts
   // as "pending" and what the user actually cares about. Using analyzed_at
   // would silently skip videos where a previous run set analyzed_at but the
-  // transcript came back empty/null (e.g. Deepgram returned 200 with empty
-  // body, then Anthropic still ran on the empty transcript and we set
-  // analyzed_at). Those zombies have transcript=null forever.
-  //
-  // We use .or() to catch BOTH transcript IS NULL and transcript = '' because
-  // stats counts empty strings as "pending" (via !!transcript), and we don't
-  // want to leave behind rows that the user sees as pending but drain can't
-  // process. Migration 0010_normalize_empty_transcripts cleans up the
-  // historical empty rows; this filter is defense-in-depth in case any new
-  // row slips through with an empty string.
+  // transcript came back empty/null (zombies).
   let q = sb
     .from("videos")
     .select("shortcode, account_username")
-    .or("transcript.is.null,transcript.eq.")
+    .is("transcript", null)
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff)
@@ -163,7 +176,7 @@ export async function POST(req: Request) {
   let remainingQ = sb
     .from("videos")
     .select("shortcode", { count: "exact", head: true })
-    .or("transcript.is.null,transcript.eq.")
+    .is("transcript", null)
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff);
@@ -216,6 +229,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     processed: results.length,
     remaining: remaining ?? null,
+    normalized_empty_transcripts: normalized,
     chained,
     chain_error: chainError,
     depth,

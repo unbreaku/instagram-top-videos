@@ -121,6 +121,7 @@ export default function AccountsPage() {
   const [lastDrainResponse, setLastDrainResponse] = useState<{
     processed?: number;
     remaining?: number | null;
+    normalized_empty_transcripts?: number;
     chained?: boolean;
     already_running?: boolean;
     message?: string;
@@ -969,6 +970,17 @@ export default function AccountsPage() {
                         </strong>{" "}
                         · Auto-chained:{" "}
                         <strong>{lastDrainResponse.chained ? "sí" : "no"}</strong>
+                        {typeof lastDrainResponse.normalized_empty_transcripts ===
+                          "number" &&
+                          lastDrainResponse.normalized_empty_transcripts > 0 && (
+                            <span className="ml-2 text-emerald-700">
+                              · 🔧 Self-heal: normalizó{" "}
+                              <strong>
+                                {lastDrainResponse.normalized_empty_transcripts}
+                              </strong>{" "}
+                              transcripts vacíos a NULL
+                            </span>
+                          )}
                       </p>
                       {lastDrainResponse.results &&
                         lastDrainResponse.results.length > 0 && (

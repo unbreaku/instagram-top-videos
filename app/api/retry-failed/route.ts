@@ -26,11 +26,21 @@ export async function POST() {
     Date.now() - WINDOW_DAYS * 86400 * 1000,
   ).toISOString();
 
+  // Self-heal empty-string transcripts first so the filter below matches.
+  try {
+    await sb
+      .from("videos")
+      .update({ transcript: null, analyze_attempts: 0, analyze_error: null })
+      .eq("transcript", "");
+  } catch {
+    // non-fatal
+  }
+
   const { data, error } = await sb
     .from("videos")
     .update({ analyze_attempts: 0, analyze_error: null })
     .gte("analyze_attempts", 3)
-    .or("transcript.is.null,transcript.eq.")
+    .is("transcript", null)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff)
     .select("shortcode");
