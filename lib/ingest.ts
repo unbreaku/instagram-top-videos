@@ -15,6 +15,29 @@ export interface IngestResult {
 }
 
 /**
+ * Returns the [start, end) ISO timestamps of the current calendar day in
+ * America/Bogota timezone. Used to dedupe snapshots — multiple refresh
+ * presses during the same day collapse onto one row instead of inflating
+ * the "Δ followers in N days" math.
+ */
+function bogotaDayBounds(now = new Date()): {
+  start: string;
+  end: string;
+} {
+  // Bogota is UTC-5 year-round (no DST).
+  const utcMs = now.getTime();
+  const bogotaMs = utcMs - 5 * 3600 * 1000;
+  const bogotaDate = new Date(bogotaMs);
+  const y = bogotaDate.getUTCFullYear();
+  const m = bogotaDate.getUTCMonth();
+  const d = bogotaDate.getUTCDate();
+  // Bogota midnight → UTC 05:00 of the same calendar day
+  const start = new Date(Date.UTC(y, m, d, 5, 0, 0, 0));
+  const end = new Date(start.getTime() + 24 * 3600 * 1000);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+/**
  * Takes raw Apify items for one account and persists them.
  *
  * Uses bulk upsert for videos and batched inserts for snapshots so the whole
@@ -53,6 +76,16 @@ export async function ingestApifyItems(
     if (Object.keys(update).length > 0) {
       await sb.from("accounts").update(update).eq("username", cleanUsername);
     }
+    // Only one snapshot per day per account. Manual refreshes during the
+    // same day overwrite the existing row instead of stacking, so the daily
+    // delta math sees real days, not button clicks.
+    const { start, end } = bogotaDayBounds();
+    await sb
+      .from("account_snapshots")
+      .delete()
+      .eq("account_username", cleanUsername)
+      .gte("captured_at", start)
+      .lt("captured_at", end);
     await sb.from("account_snapshots").insert({
       account_username: cleanUsername,
       followers_count: profile.followersCount,
@@ -131,6 +164,23 @@ export async function ingestApifyItems(
       comments: item.commentsCount ?? null,
       captured_at: now,
     }));
+
+  // Same one-per-day rule for video_snapshots. Delete any existing rows in
+  // today's Bogota-day window for these videos, then insert fresh.
+  if (snapshotRows.length > 0) {
+    const { start, end } = bogotaDayBounds();
+    const shortcodes = snapshotRows.map((r) => r.video_shortcode);
+    for (let i = 0; i < shortcodes.length; i += 500) {
+      const chunkSc = shortcodes.slice(i, i + 500);
+      const { error } = await sb
+        .from("video_snapshots")
+        .delete()
+        .in("video_shortcode", chunkSc)
+        .gte("captured_at", start)
+        .lt("captured_at", end);
+      if (error) throw new Error(`video_snapshots dedup: ${error.message}`);
+    }
+  }
 
   let snapshotsAdded = 0;
   for (let i = 0; i < snapshotRows.length; i += 1000) {

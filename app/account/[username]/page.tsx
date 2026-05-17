@@ -308,14 +308,38 @@ export default function AccountPage({
 
   const chartData = useMemo(() => {
     if (!detail) return [];
-    return detail.snapshots
-      .filter((s) => typeof s.followers_count === "number")
-      .map((s) => ({
-        date: new Date(s.captured_at).toLocaleDateString("es-CO", {
+    // Dedupe snapshots by Bogotá calendar day — keep the latest snapshot
+    // of each day. This protects against the historical situation where
+    // multiple manual refreshes inflated the count of "days" in the chart.
+    const dayFmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Bogota",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const byDay = new Map<
+      string,
+      { capturedAt: string; followers: number }
+    >();
+    for (const s of detail.snapshots) {
+      if (typeof s.followers_count !== "number") continue;
+      const day = dayFmt.format(new Date(s.captured_at));
+      const prev = byDay.get(day);
+      if (!prev || s.captured_at > prev.capturedAt) {
+        byDay.set(day, {
+          capturedAt: s.captured_at,
+          followers: s.followers_count,
+        });
+      }
+    }
+    return [...byDay.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, v]) => ({
+        date: new Date(v.capturedAt).toLocaleDateString("es-CO", {
           month: "short",
           day: "2-digit",
         }),
-        followers: s.followers_count,
+        followers: v.followers,
       }));
   }, [detail]);
 
