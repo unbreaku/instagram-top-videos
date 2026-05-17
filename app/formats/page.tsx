@@ -81,7 +81,7 @@ interface FormatsResponse {
 
 function fmt(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  return new Intl.NumberFormat("es-CO").format(n);
+  return new Intl.NumberFormat("es-ES").format(n);
 }
 function compact(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";

@@ -50,12 +50,12 @@ export async function GET(_req: Request, { params }: Params) {
   }>;
 
   // Build day-bucketed snapshots (last snapshot of each calendar day).
-  // We bucket by the user's local-ish day (Bogotá / America/Bogota, UTC-5)
-  // instead of raw UTC. Otherwise a cron firing at 03:00 UTC Tuesday would
-  // get bucketed into "Tuesday" while the action visibly happened Monday
-  // evening for the user, and the dashboard would show empty days.
+  // We bucket by the user's local day (Europe/Madrid, CET/CEST with DST)
+  // instead of raw UTC. Otherwise a cron firing at 23:00 UTC would get
+  // bucketed into the previous calendar day from the user's perspective,
+  // and the dashboard would show empty / shifted days.
   const tzFormatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Bogota",
+    timeZone: "Europe/Madrid",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

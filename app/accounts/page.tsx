@@ -62,7 +62,7 @@ interface PreviewResponse {
 
 function fmt(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  return new Intl.NumberFormat("es-CO").format(n);
+  return new Intl.NumberFormat("es-ES").format(n);
 }
 
 function proxied(url: string | null | undefined): string | undefined {
@@ -619,7 +619,7 @@ export default function AccountsPage() {
                       {m.applies_via === "manual" && !m.applied_at
                         ? "manual (bootstrap)"
                         : m.applied_at
-                          ? `aplicada ${new Date(m.applied_at).toLocaleString("es-CO")}${m.duration_ms ? ` · ${m.duration_ms}ms` : ""}`
+                          ? `aplicada ${new Date(m.applied_at).toLocaleString("es-ES", { timeZone: "Europe/Madrid" })}${m.duration_ms ? ` · ${m.duration_ms}ms` : ""}`
                           : "pendiente"}
                     </span>
                   </li>

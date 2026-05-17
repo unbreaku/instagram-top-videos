@@ -69,15 +69,16 @@ interface DailyLift {
 
 function fmt(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  return new Intl.NumberFormat("es-CO").format(n);
+  return new Intl.NumberFormat("es-ES").format(n);
 }
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("es-CO", {
+  return new Date(iso).toLocaleDateString("es-ES", {
     year: "numeric",
     month: "short",
     day: "2-digit",
+    timeZone: "Europe/Madrid",
   });
 }
 
@@ -308,11 +309,11 @@ export default function AccountPage({
 
   const chartData = useMemo(() => {
     if (!detail) return [];
-    // Dedupe snapshots by Bogotá calendar day — keep the latest snapshot
+    // Dedupe snapshots by Madrid calendar day — keep the latest snapshot
     // of each day. This protects against the historical situation where
     // multiple manual refreshes inflated the count of "days" in the chart.
     const dayFmt = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Bogota",
+      timeZone: "Europe/Madrid",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -335,9 +336,10 @@ export default function AccountPage({
     return [...byDay.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([, v]) => ({
-        date: new Date(v.capturedAt).toLocaleDateString("es-CO", {
+        date: new Date(v.capturedAt).toLocaleDateString("es-ES", {
           month: "short",
           day: "2-digit",
+          timeZone: "Europe/Madrid",
         }),
         followers: v.followers,
       }));

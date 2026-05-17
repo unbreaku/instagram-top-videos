@@ -16,25 +16,49 @@ export interface IngestResult {
 
 /**
  * Returns the [start, end) ISO timestamps of the current calendar day in
- * America/Bogota timezone. Used to dedupe snapshots — multiple refresh
+ * Europe/Madrid timezone. Used to dedupe snapshots — multiple refresh
  * presses during the same day collapse onto one row instead of inflating
  * the "Δ followers in N days" math.
+ *
+ * Madrid observes DST (CET UTC+1 in winter, CEST UTC+2 in summer), so we
+ * derive the offset from `Intl` instead of hardcoding it. Hardcoding would
+ * silently drift by an hour twice a year and misclassify midnight rows.
  */
-function bogotaDayBounds(now = new Date()): {
+function madridDayBounds(now = new Date()): {
   start: string;
   end: string;
 } {
-  // Bogota is UTC-5 year-round (no DST).
-  const utcMs = now.getTime();
-  const bogotaMs = utcMs - 5 * 3600 * 1000;
-  const bogotaDate = new Date(bogotaMs);
-  const y = bogotaDate.getUTCFullYear();
-  const m = bogotaDate.getUTCMonth();
-  const d = bogotaDate.getUTCDate();
-  // Bogota midnight → UTC 05:00 of the same calendar day
-  const start = new Date(Date.UTC(y, m, d, 5, 0, 0, 0));
-  const end = new Date(start.getTime() + 24 * 3600 * 1000);
-  return { start: start.toISOString(), end: end.toISOString() };
+  // Read the Madrid wall-clock for `now`, then derive offset by comparing
+  // that wall-clock (interpreted as UTC) against the real UTC of `now`.
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Madrid",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (t: string) =>
+    Number(parts.find((p) => p.type === t)?.value ?? "0");
+  const y = get("year");
+  const mo = get("month");
+  const d = get("day");
+  const h = get("hour");
+  const mi = get("minute");
+  const se = get("second");
+  // If Madrid wall-clock were UTC, what ms would it be?
+  const asUtcMs = Date.UTC(y, mo - 1, d, h, mi, se);
+  const offsetMs = asUtcMs - now.getTime(); // +2h in summer, +1h in winter
+  // Madrid midnight that day, expressed in UTC
+  const startUtc = Date.UTC(y, mo - 1, d, 0, 0, 0, 0) - offsetMs;
+  const endUtc = startUtc + 24 * 3600 * 1000;
+  return {
+    start: new Date(startUtc).toISOString(),
+    end: new Date(endUtc).toISOString(),
+  };
 }
 
 /**
@@ -79,7 +103,7 @@ export async function ingestApifyItems(
     // Only one snapshot per day per account. Manual refreshes during the
     // same day overwrite the existing row instead of stacking, so the daily
     // delta math sees real days, not button clicks.
-    const { start, end } = bogotaDayBounds();
+    const { start, end } = madridDayBounds();
     await sb
       .from("account_snapshots")
       .delete()
@@ -166,9 +190,9 @@ export async function ingestApifyItems(
     }));
 
   // Same one-per-day rule for video_snapshots. Delete any existing rows in
-  // today's Bogota-day window for these videos, then insert fresh.
+  // today's Madrid-day window for these videos, then insert fresh.
   if (snapshotRows.length > 0) {
-    const { start, end } = bogotaDayBounds();
+    const { start, end } = madridDayBounds();
     const shortcodes = snapshotRows.map((r) => r.video_shortcode);
     for (let i = 0; i < shortcodes.length; i += 500) {
       const chunkSc = shortcodes.slice(i, i + 500);
