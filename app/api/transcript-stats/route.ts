@@ -7,34 +7,32 @@ export const dynamic = "force-dynamic";
 /**
  * Transcript / analysis backlog stats per account.
  *
- * Returns enough numbers to make an informed call on whether to lower the
- * view threshold or expand the time window without spending money blind.
+ * Strategy: COUNT queries, not row fetches.
  *
- * Per-account counts:
- *   - videos_total        every row in `videos` (includes photos/sidecars)
- *   - videos_with_audio   has video_url (transcribable)
- *   - transcripts_done    has transcript stored (won't be re-fetched)
- *   - transcripts_pending under the PROPOSED policy:
- *                           transcript IS NULL
- *                           AND video_url IS NOT NULL
- *                           AND analyze_attempts < 3
- *                           AND posted_at >= NOW() - 90 days
- *   - transcripts_failed  analyze_attempts >= 3 (gave up; won't retry on cron)
- *   - estimated_minutes   sum of duration_seconds for pending videos / 60
- *   - estimated_cost_usd  pending_minutes * $0.0058 (Deepgram PAYG)
- *                          + pending_count * $0.0025 (Anthropic Haiku per video)
+ * Previous version paginated through the videos table fetching the
+ * `transcript` column. Transcripts are multi-KB text blobs; once the
+ * response payload approached Supabase's ~6MB limit, the API silently
+ * truncated and the loop's `if (rows.length < PAGE) break` thought it was
+ * the last page. Result: a real 510-transcripts/199-pending state was
+ * being reported as 189-done/357-pending, which then broke the drain UX
+ * and caused the user to chase ghosts for an hour.
+ *
+ * Now we run small HEAD-count queries per account × per state. ~5 accounts
+ * × 4 counts each = ~20 round-trips, no row data transferred. Numbers are
+ * exact and align with /api/transcript-debug.
  */
 const DEEPGRAM_USD_PER_MIN = 0.0058;
 const ANTHROPIC_USD_PER_VIDEO = 0.0025;
+const ANTHROPIC_USD_PER_PHOTO = 0.0025; // photos still get caption analysis
 const WINDOW_DAYS = 90;
 
 interface AccountStats {
   username: string;
-  videos_total: number;
-  videos_with_audio: number;
-  transcripts_done: number;
-  transcripts_pending: number;
-  transcripts_failed: number;
+  videos_total: number; // all posts in window
+  videos_with_audio: number; // has video_url
+  transcripts_done: number; // has non-empty transcript
+  transcripts_pending: number; // no transcript + attempts<3 + has audio
+  transcripts_failed: number; // no transcript + attempts>=3 + has audio
   estimated_minutes: number;
   estimated_cost_usd: number;
 }
@@ -45,9 +43,7 @@ export async function GET() {
     Date.now() - WINDOW_DAYS * 86400 * 1000,
   ).toISOString();
 
-  // Seed the stats map from `accounts` so accounts with 0 videos still
-  // appear with zeros (otherwise they'd silently disappear from the panel).
-  // Excludes soft-deleted accounts so we don't render rows for trash.
+  // Seed from accounts so accounts with 0 videos still render with zeros.
   const { data: accounts, error: accErr } = await sb
     .from("accounts")
     .select("username")
@@ -56,82 +52,95 @@ export async function GET() {
   if (accErr) {
     return NextResponse.json({ error: accErr.message }, { status: 500 });
   }
+  const usernames = (accounts || []).map((a) => (a as { username: string }).username);
 
-  const byUser = new Map<string, AccountStats>();
-  const blank = (u: string): AccountStats => ({
-    username: u,
-    videos_total: 0,
-    videos_with_audio: 0,
-    transcripts_done: 0,
-    transcripts_pending: 0,
-    transcripts_failed: 0,
-    estimated_minutes: 0,
-    estimated_cost_usd: 0,
-  });
-  for (const a of accounts || []) {
-    byUser.set((a as { username: string }).username, blank(
-      (a as { username: string }).username,
-    ));
-  }
-
-  // Paginate through videos. PostgREST caps each response at ~1000 rows
-  // (max-rows). A single .select() with N accounts × hundreds of videos
-  // would silently truncate to the alphabetically-first accounts, which is
-  // exactly the bug this fixes — only andresbilbao + crece30x showed up.
-  const PAGE = 999; // staying under the 1000 cliff (see videos route comment)
-  let offset = 0;
-  while (true) {
-    const { data, error } = await sb
+  // Helper: run a HEAD count with a filter callback. Avoids fetching any row
+  // data, just gets `count` back from PostgREST. Multi-MB transcripts never
+  // touch the wire.
+  async function count(
+    username: string,
+    apply: (q: ReturnType<typeof sb.from>) => any,
+  ): Promise<number> {
+    let q = sb
       .from("videos")
-      .select(
-        "account_username, video_url, transcript, analyze_attempts, duration_seconds, posted_at",
-      )
-      .order("account_username", { ascending: true })
-      .order("shortcode", { ascending: true })
-      .range(offset, offset + PAGE - 1);
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-    const rows = data || [];
-    for (const v of rows) {
-      const u = (v as { account_username: string }).account_username;
-      if (!u) continue;
-      if (!byUser.has(u)) byUser.set(u, blank(u));
-      const s = byUser.get(u)!;
-      const hasAudio = !!(v as { video_url: string | null }).video_url;
-      const hasTranscript = !!(v as { transcript: string | null }).transcript;
-      const attempts =
-        (v as { analyze_attempts: number | null }).analyze_attempts ?? 0;
-      const posted = (v as { posted_at: string | null }).posted_at;
-      const inWindow = posted ? posted >= cutoff : false;
-      const duration =
-        (v as { duration_seconds: number | null }).duration_seconds ?? 45;
-
-      s.videos_total += 1;
-      if (hasAudio) s.videos_with_audio += 1;
-      if (hasTranscript) s.transcripts_done += 1;
-      if (hasAudio && !hasTranscript && attempts >= 3)
-        s.transcripts_failed += 1;
-      if (hasAudio && !hasTranscript && attempts < 3 && inWindow) {
-        s.transcripts_pending += 1;
-        s.estimated_minutes += duration / 60;
-      }
-    }
-    if (rows.length < PAGE) break; // last page
-    offset += PAGE;
+      .select("shortcode", { count: "exact", head: true })
+      .eq("account_username", username)
+      .gte("posted_at", cutoff);
+    q = apply(q);
+    const { count: c } = await q;
+    return c ?? 0;
   }
 
-  for (const s of byUser.values()) {
-    s.estimated_cost_usd = +(
-      s.estimated_minutes * DEEPGRAM_USD_PER_MIN +
-      s.transcripts_pending * ANTHROPIC_USD_PER_VIDEO
-    ).toFixed(2);
-    s.estimated_minutes = +s.estimated_minutes.toFixed(1);
+  // For cost we need the SUM of duration_seconds for pending videos. PostgREST
+  // doesn't expose SUM directly without a view/RPC, but we can fetch just the
+  // duration column (small int) for the pending rows. That's bounded by
+  // pending count, typically <500 rows per account → tiny payload.
+  async function sumPendingMinutes(username: string): Promise<number> {
+    const { data } = await sb
+      .from("videos")
+      .select("duration_seconds")
+      .eq("account_username", username)
+      .gte("posted_at", cutoff)
+      .not("video_url", "is", null)
+      .is("transcript", null)
+      .lt("analyze_attempts", 3);
+    if (!data) return 0;
+    return data.reduce(
+      (s, r) =>
+        s + ((r as { duration_seconds: number | null }).duration_seconds ?? 45) / 60,
+      0,
+    );
   }
 
-  const stats = [...byUser.values()].sort(
-    (a, b) => b.transcripts_pending - a.transcripts_pending,
+  // Fan out 4 counts + 1 duration-sum per account in parallel.
+  const stats: AccountStats[] = await Promise.all(
+    usernames.map(async (u) => {
+      const [
+        videos_total,
+        videos_with_audio,
+        transcripts_done,
+        transcripts_pending,
+        transcripts_failed,
+        pendingMinutes,
+      ] = await Promise.all([
+        count(u, (q) => q),
+        count(u, (q) => q.not("video_url", "is", null)),
+        // transcript is non-NULL. We treat empty-string as "not done" via the
+        // pending/failed counts below; drain self-heals empties to NULL so this
+        // converges quickly.
+        count(u, (q) => q.not("transcript", "is", null).neq("transcript", "")),
+        count(u, (q) =>
+          q
+            .not("video_url", "is", null)
+            .is("transcript", null)
+            .lt("analyze_attempts", 3),
+        ),
+        count(u, (q) =>
+          q
+            .not("video_url", "is", null)
+            .is("transcript", null)
+            .gte("analyze_attempts", 3),
+        ),
+        sumPendingMinutes(u),
+      ]);
+      const estimated_cost_usd = +(
+        pendingMinutes * DEEPGRAM_USD_PER_MIN +
+        transcripts_pending * ANTHROPIC_USD_PER_VIDEO
+      ).toFixed(2);
+      return {
+        username: u,
+        videos_total,
+        videos_with_audio,
+        transcripts_done,
+        transcripts_pending,
+        transcripts_failed,
+        estimated_minutes: +pendingMinutes.toFixed(1),
+        estimated_cost_usd,
+      };
+    }),
   );
+
+  stats.sort((a, b) => b.transcripts_pending - a.transcripts_pending);
 
   const totals = {
     videos_total: stats.reduce((s, x) => s + x.videos_total, 0),
@@ -148,8 +157,6 @@ export async function GET() {
   // chain is almost certainly still running. The UI uses this to render a
   // "drenando..." indicator instead of the button, so a page reload doesn't
   // tempt the user into clicking again and spawning a parallel chain.
-  // Window bumped from 2 → 5 min so the indicator stays visible across slow
-  // batches without flipping back to the button prematurely.
   const recentCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const { count: recentAnalyses } = await sb
     .from("videos")
@@ -163,18 +170,13 @@ export async function GET() {
     .limit(1)
     .maybeSingle();
 
-  // "Actividad reciente": last 20 videos that the back has touched, success
-  // or fail. This gives the user a live window into what the chain is doing
-  // when it runs silently — no DevTools needed.
-  // Two sources:
-  //   - Recent successes: videos with transcribed_at OR analyzed_at in last hour
-  //   - Recent failures: videos with non-null analyze_error
-  // We pick the most recent timestamp per row and sort.
+  // "Actividad reciente": last 20 videos that the back has touched. Doesn't
+  // fetch the transcript column to avoid the payload-truncation trap.
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const { data: recentRows } = await sb
     .from("videos")
     .select(
-      "shortcode, account_username, transcript, analyzed_at, transcribed_at, analyze_error, analyze_attempts",
+      "shortcode, account_username, analyzed_at, transcribed_at, analyze_error, analyze_attempts",
     )
     .or(
       `analyzed_at.gte.${oneHourAgo},transcribed_at.gte.${oneHourAgo},analyze_error.not.is.null`,
@@ -186,19 +188,21 @@ export async function GET() {
       (r as { analyzed_at: string | null }).analyzed_at ||
       (r as { transcribed_at: string | null }).transcribed_at ||
       null;
-    const hasTranscript = !!(r as { transcript: string | null }).transcript;
     const err = (r as { analyze_error: string | null }).analyze_error;
     const attempts =
       (r as { analyze_attempts: number | null }).analyze_attempts ?? 0;
+    // We don't have transcript here (deliberately) so we infer status from
+    // the error and attempts.
+    const status: "ok" | "error" | "pending" = err
+      ? "error"
+      : ts
+        ? "ok"
+        : "pending";
     return {
       shortcode: (r as { shortcode: string }).shortcode,
       account: (r as { account_username: string }).account_username,
       ts,
-      status: err
-        ? "error"
-        : hasTranscript
-          ? "ok"
-          : "pending",
+      status,
       attempts,
       error: err ? err.slice(0, 180) : null,
     };
