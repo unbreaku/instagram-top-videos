@@ -11,14 +11,15 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const includeDeleted = searchParams.get("include_deleted") === "1";
 
-  // Star account first (account_role='star' ranks above 'guide' and NULL
-   // because we map 'star' to a sort key elsewhere on the client; for now we
-   // just sort star by putting account_role asc so 'star' comes before NULL).
-  // Then pinned accounts, then alphabetical.
+  // We deliberately do NOT order by account_role at the SQL level — if the
+  // 0011 migration hasn't been applied yet (or the column otherwise doesn't
+  // exist), ORDER BY a missing column makes the entire query return zero
+  // rows, which made the dashboard appear empty after the schema pivot.
+  // We sort the star to the top in JS after fetching, defensive against
+  // either the column missing or all rows being NULL.
   let q = sb
     .from("accounts")
     .select("*")
-    .order("account_role", { ascending: true, nullsFirst: false })
     .order("is_pinned", { ascending: false })
     .order("username", { ascending: true });
   if (!includeDeleted) q = q.is("deleted_at", null);
@@ -95,29 +96,39 @@ export async function GET(req: Request) {
   const runMap = new Map(lastRuns.map((r) => [r.u, r.run]));
   const pendingMap = new Map(pendingAnalyses.map((p) => [p.u, p.count]));
 
-  return NextResponse.json({
-    accounts: (accounts || []).map((a) => {
-      const snap = snapMap.get(a.username);
-      const inDb = countMap.get(a.username) ?? 0;
-      const run = runMap.get(a.username);
-      const isActive =
-        !!run && (run.status === "RUNNING" || run.status === "READY");
-      return {
-        ...a,
-        posts_count: snap?.posts_ig ?? null,
-        posts_in_db: inDb,
-        video_count: inDb,
-        followers_latest: snap?.followers ?? null,
-        status: {
-          scrape_active: isActive,
-          last_run_status: run?.status ?? null,
-          last_run_started_at: run?.started_at ?? null,
-          last_run_error: run?.error ?? null,
-          pending_analysis: pendingMap.get(a.username) ?? 0,
-        },
-      };
-    }),
+  const augmented = (accounts || []).map((a) => {
+    const snap = snapMap.get(a.username);
+    const inDb = countMap.get(a.username) ?? 0;
+    const run = runMap.get(a.username);
+    const isActive =
+      !!run && (run.status === "RUNNING" || run.status === "READY");
+    return {
+      ...a,
+      posts_count: snap?.posts_ig ?? null,
+      posts_in_db: inDb,
+      video_count: inDb,
+      followers_latest: snap?.followers ?? null,
+      status: {
+        scrape_active: isActive,
+        last_run_status: run?.status ?? null,
+        last_run_started_at: run?.started_at ?? null,
+        last_run_error: run?.error ?? null,
+        pending_analysis: pendingMap.get(a.username) ?? 0,
+      },
+    };
   });
+
+  // Sort star first (defensive: reads account_role optional chain, treats
+  // missing column as null). Pinned tier is already enforced at the SQL
+  // level. This is a stable JS sort, so within each tier the alphabetical
+  // order from the SQL query is preserved.
+  augmented.sort((a, b) => {
+    const aStar = a.account_role === "star" ? 0 : 1;
+    const bStar = b.account_role === "star" ? 0 : 1;
+    return aStar - bStar;
+  });
+
+  return NextResponse.json({ accounts: augmented });
 }
 
 export async function POST(req: Request) {
