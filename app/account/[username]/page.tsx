@@ -1161,13 +1161,22 @@ function Stats90d({
 
   return (
     <section className="mb-10 grid gap-6 lg:grid-cols-3">
-      {chartData.length > 1 ? (
+      {chartData.length >= 1 ? (
         <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm lg:col-span-2">
           <div className="mb-3 flex items-baseline justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
               Crecimiento de followers
             </h2>
-            {(() => {
+            {chartData.length === 1 ? (
+              <div className="text-right text-xs">
+                <div className="text-zinc-900 font-semibold">
+                  {fmt(chartData[0].followers || 0)}
+                </div>
+                <div className="text-zinc-500">
+                  primer día capturado — vuelve mañana para ver Δ
+                </div>
+              </div>
+            ) : (() => {
               const first = chartData[0].followers || 0;
               const last = chartData[chartData.length - 1].followers || 0;
               const delta = last - first;
@@ -1233,7 +1242,7 @@ function Stats90d({
         </div>
       ) : (
         <div className="rounded-xl border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-500 lg:col-span-2">
-          Faltan snapshots para graficar (necesitas al menos 2 días de cron).
+          Sin snapshots todavía. Refrescá la cuenta o esperá al cron diario.
         </div>
       )}
 
