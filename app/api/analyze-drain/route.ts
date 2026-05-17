@@ -143,24 +143,25 @@ export async function POST(req: Request) {
   // would silently skip videos where a previous run set analyzed_at but the
   // transcript came back empty/null (zombies).
   //
-  // In panic mode we drop the attempts cap AND ignore current transcript
-  // state — every video with video_url in window gets re-attempted.
+  // After the inline self-heal above, empty-string transcripts are already
+  // normalized to NULL, so a plain .is("transcript", null) catches BOTH the
+  // historically-NULL and historically-empty videos. We avoid PostgREST's
+  // .or("transcript.eq.") because that syntax matched almost nothing in
+  // practice (silent filter failure).
   let q = sb
     .from("videos")
     .select("shortcode, account_username")
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff)
+    .is("transcript", null);
+  if (!panic) {
+    q = q.lt("analyze_attempts", 3);
+  }
+  if (account) q = q.eq("account_username", account);
+  q = q
     .order("latest_views", { ascending: false })
     .order("shortcode", { ascending: true })
     .limit(FETCH_PER_CALL);
-  if (!panic) {
-    q = q.is("transcript", null).lt("analyze_attempts", 3);
-  } else {
-    // In panic mode, still skip videos that already have a non-empty
-    // transcript — re-running them is pure waste.
-    q = q.or("transcript.is.null,transcript.eq.");
-  }
-  if (account) q = q.eq("account_username", account);
 
   const { data: candidates, error } = await q;
   if (error)
