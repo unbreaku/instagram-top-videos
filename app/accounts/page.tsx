@@ -107,6 +107,24 @@ export default function AccountsPage() {
       is_active: boolean;
     };
   } | null>(null);
+  // Last response from /api/analyze-drain, kept for in-page diagnostics so
+  // the user doesn't need to open DevTools.
+  const [lastDrainResponse, setLastDrainResponse] = useState<{
+    processed?: number;
+    remaining?: number | null;
+    chained?: boolean;
+    already_running?: boolean;
+    message?: string;
+    error?: string;
+    results?: Array<{
+      shortcode: string;
+      account: string;
+      ok: boolean;
+      error?: string;
+      skipped?: string;
+    }>;
+    at?: string; // when we received this response
+  } | null>(null);
 
   async function refresh() {
     const res = await fetch("/api/accounts");
@@ -692,6 +710,10 @@ export default function AccountsPage() {
                             method: "POST",
                           });
                           const j = await r.json();
+                          setLastDrainResponse({
+                            ...j,
+                            at: new Date().toISOString(),
+                          });
                           if (j.already_running) {
                             setMsg(
                               "Ya hay un drenado en curso. El indicador verde aparecerá en ~30s y la página se va a auto-refrescar.",
@@ -705,6 +727,10 @@ export default function AccountsPage() {
                           }
                           loadTranscriptStats();
                         } catch (e) {
+                          setLastDrainResponse({
+                            error: e instanceof Error ? e.message : String(e),
+                            at: new Date().toISOString(),
+                          });
                           setMsg(
                             `Error: ${e instanceof Error ? e.message : String(e)}`,
                           );
@@ -727,6 +753,72 @@ export default function AccountsPage() {
                     </button>
                   </div>
                 )
+              )}
+              {lastDrainResponse && (
+                <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs">
+                  <div className="mb-2 font-semibold uppercase tracking-wide text-zinc-600">
+                    Diagnóstico del último drenado ·{" "}
+                    {lastDrainResponse.at &&
+                      new Date(lastDrainResponse.at).toLocaleTimeString(
+                        "es-ES",
+                        { timeZone: "Europe/Madrid" },
+                      )}
+                  </div>
+                  {lastDrainResponse.already_running ? (
+                    <p className="text-amber-700">
+                      ⚠ Backend respondió:{" "}
+                      <strong>already_running</strong> — había una cadena viva,
+                      no arrancó otra.
+                    </p>
+                  ) : lastDrainResponse.error ? (
+                    <p className="text-red-700">
+                      ❌ Error: <code>{lastDrainResponse.error}</code>
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-zinc-700">
+                        Procesados en este lote:{" "}
+                        <strong>{lastDrainResponse.processed ?? 0}</strong>{" "}
+                        · Restantes:{" "}
+                        <strong>
+                          {lastDrainResponse.remaining ?? "?"}
+                        </strong>{" "}
+                        · Auto-chained:{" "}
+                        <strong>{lastDrainResponse.chained ? "sí" : "no"}</strong>
+                      </p>
+                      {lastDrainResponse.results &&
+                        lastDrainResponse.results.length > 0 && (
+                          <ul className="mt-2 space-y-1">
+                            {lastDrainResponse.results.map((r, i) => (
+                              <li key={i} className="font-mono">
+                                {r.ok ? "✅" : "❌"} @{r.account} / {r.shortcode}
+                                {r.skipped && (
+                                  <span className="ml-2 text-amber-700">
+                                    [skipped: {r.skipped}]
+                                  </span>
+                                )}
+                                {r.error && (
+                                  <span className="ml-2 text-red-700">
+                                    [{r.error.slice(0, 120)}]
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      {lastDrainResponse.processed === 0 &&
+                        !lastDrainResponse.already_running && (
+                          <p className="mt-2 text-amber-700">
+                            ⚠ <strong>Cero videos procesados.</strong> Probables
+                            causas: (a) ningún video matchea los filtros
+                            (transcript IS NULL + video_url + posted_at &lt;= 90d
+                            + attempts &lt; 3), (b) todos fallaron antes de
+                            empezar. Mandame este texto y reviso.
+                          </p>
+                        )}
+                    </>
+                  )}
+                </div>
               )}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

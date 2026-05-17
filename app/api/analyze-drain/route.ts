@@ -85,12 +85,16 @@ export async function POST(req: Request) {
     }
   }
 
-  // Same gating rules as the cron + analyze-pending so all three agree on
-  // what counts as "still to do".
+  // Filter on TRANSCRIPT (not analyzed_at) because that's what stats counts
+  // as "pending" and what the user actually cares about. Using analyzed_at
+  // would silently skip videos where a previous run set analyzed_at but the
+  // transcript came back empty/null (e.g. Deepgram returned 200 with empty
+  // body, then Anthropic still ran on the empty transcript and we set
+  // analyzed_at). Those zombies have transcript=null forever.
   let q = sb
     .from("videos")
     .select("shortcode, account_username")
-    .is("analyzed_at", null)
+    .is("transcript", null)
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff)
@@ -110,15 +114,17 @@ export async function POST(req: Request) {
     error?: string;
   }> = [];
   for (const c of candidates || []) {
-    // Time-box to leave room for chain dispatch before the 60s wall.
-    // 10 videos × ~5s each = 50s worst case; with margin we abort early
-    // if we're near the limit.
-    const r = await analyzeOneVideo(c.shortcode);
+    // Pass force:true so videos that previously had analyzed_at set with
+    // null transcript (Deepgram empty response zombies) get a fresh try.
+    // analyzeOneVideo only re-calls Deepgram when transcript is null, so
+    // force doesn't waste money on videos that already have one.
+    const r = await analyzeOneVideo(c.shortcode, { force: true });
     results.push({
       shortcode: c.shortcode,
       account: c.account_username,
       ok: r.ok,
       error: r.error,
+      skipped: r.skipped,
     });
   }
 
@@ -126,7 +132,7 @@ export async function POST(req: Request) {
   let remainingQ = sb
     .from("videos")
     .select("shortcode", { count: "exact", head: true })
-    .is("analyzed_at", null)
+    .is("transcript", null)
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff);
