@@ -143,6 +143,20 @@ export async function GET(req: Request, { params }: Params) {
     );
 
   const videos = (videosRes.data || []) as VideoRow[];
+  // DEBUG: log first video's transcript state so we can see what Supabase
+  // returned directly without any mapping. Delete after diagnosing.
+  if (videos[0]) {
+    console.log("[videos-route]", {
+      limit,
+      total_returned: videos.length,
+      first_shortcode: videos[0].shortcode,
+      first_transcript_present: !!videos[0].transcript,
+      first_transcript_length: videos[0].transcript?.length ?? null,
+      first_hook_present: !!videos[0].hook,
+      first_analyze_attempts: videos[0].analyze_attempts,
+      first_video_url_present: !!videos[0].video_url,
+    });
+  }
   const snapshots = (snapshotsRes.data || []) as SnapshotRow[];
   const { attribution, inWindowSet } = attributeFollowers(videos, snapshots);
 
