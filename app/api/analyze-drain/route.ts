@@ -78,9 +78,11 @@ export async function POST(req: Request) {
   // there's almost certainly an active chain in flight — refuse user-initiated
   // calls (depth=0) and let the existing chain finish. Internal self-chained
   // calls (depth>0) always pass because they ARE the active chain.
-  // (Window bumped 2 → 5 min after seeing the UI flip back to the button
-  //  prematurely on slow batches.)
-  if (depth === 0) {
+  // Override: ?force=1 bypasses the guard (used by the 'Forzar reinicio'
+  // button for when a chain is dead but the activity heartbeat hasn't expired
+  // yet).
+  const force = url.searchParams.get("force") === "1";
+  if (depth === 0 && !force) {
     const recentCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const { count: recentCount } = await sb
       .from("videos")
@@ -91,7 +93,7 @@ export async function POST(req: Request) {
         already_running: true,
         recent_analyses_2min: recentCount,
         message:
-          "Ya hay un drenado en curso. Esperá unos minutos y revisá los conteos.",
+          "Ya hay un drenado en curso. Esperá unos minutos y revisá los conteos. Si no avanza, usá 'Forzar reinicio'.",
       });
     }
   }

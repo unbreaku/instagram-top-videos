@@ -680,31 +680,111 @@ export default function AccountsPage() {
                 Costo = Deepgram $0.0058/min + Claude Haiku $0.0025/video.
               </p>
               {transcriptStats.drain?.is_active ? (
-                <div className="flex items-center gap-3 rounded-md border border-emerald-200 bg-emerald-50 p-3">
-                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-                  <div className="flex-1 text-sm text-emerald-900">
-                    <strong>Drenando en background…</strong>{" "}
-                    <span className="text-emerald-700">
-                      {transcriptStats.drain.recent_analyses} videos analizados
-                      en últimos {transcriptStats.drain.recent_analyses_window_min} min ·{" "}
-                      {transcriptStats.totals.transcripts_pending} pendientes
-                    </span>
-                    <div className="mt-1 text-xs text-emerald-700">
-                      Refrescando cada 8s. Podés cerrar esta pestaña — la
-                      cadena sigue corriendo en Vercel hasta terminar.
-                      {transcriptStats.drain.last_analyzed_at && (
-                        <>
-                          {" · Último: "}
-                          {new Date(
-                            transcriptStats.drain.last_analyzed_at,
-                          ).toLocaleTimeString("es-ES", {
-                            timeZone: "Europe/Madrid",
-                          })}
-                        </>
-                      )}
+                (() => {
+                  const lastTs = transcriptStats.drain.last_analyzed_at;
+                  const secsSinceLast = lastTs
+                    ? Math.round((Date.now() - new Date(lastTs).getTime()) / 1000)
+                    : null;
+                  // If "active" per heartbeat but no actual analysis in >2 min,
+                  // the chain has probably died and we're just in the lag
+                  // window before the indicator expires. Switch to amber +
+                  // surface the 'Forzar reinicio' button.
+                  const stalled =
+                    secsSinceLast !== null && secsSinceLast > 120;
+                  return (
+                    <div
+                      className={`flex items-start gap-3 rounded-md border p-3 ${
+                        stalled
+                          ? "border-amber-200 bg-amber-50"
+                          : "border-emerald-200 bg-emerald-50"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-2 w-2 mt-1.5 rounded-full ${
+                          stalled
+                            ? "bg-amber-500"
+                            : "animate-pulse bg-emerald-500"
+                        }`}
+                      />
+                      <div
+                        className={`flex-1 text-sm ${stalled ? "text-amber-900" : "text-emerald-900"}`}
+                      >
+                        <strong>
+                          {stalled
+                            ? "Chain posiblemente estancado"
+                            : "Drenando en background…"}
+                        </strong>{" "}
+                        <span
+                          className={
+                            stalled ? "text-amber-700" : "text-emerald-700"
+                          }
+                        >
+                          {transcriptStats.drain.recent_analyses} videos
+                          analizados en últimos{" "}
+                          {transcriptStats.drain.recent_analyses_window_min} min ·{" "}
+                          {transcriptStats.totals.transcripts_pending} pendientes
+                        </span>
+                        <div
+                          className={`mt-1 text-xs ${
+                            stalled ? "text-amber-700" : "text-emerald-700"
+                          }`}
+                        >
+                          {lastTs && secsSinceLast !== null ? (
+                            <>
+                              Último video procesado: hace{" "}
+                              <strong>
+                                {secsSinceLast < 60
+                                  ? `${secsSinceLast}s`
+                                  : `${Math.floor(secsSinceLast / 60)} min ${secsSinceLast % 60}s`}
+                              </strong>{" "}
+                              ({new Date(lastTs).toLocaleTimeString("es-ES", {
+                                timeZone: "Europe/Madrid",
+                              })})
+                              {stalled &&
+                                " · más de 2 min sin actividad indica que el chain murió"}
+                            </>
+                          ) : (
+                            "Sin actividad registrada todavía…"
+                          )}
+                        </div>
+                        {stalled && (
+                          <button
+                            onClick={async () => {
+                              setBusyAction("drain-force");
+                              try {
+                                const r = await fetch(
+                                  "/api/analyze-drain?force=1",
+                                  { method: "POST" },
+                                );
+                                const j = await r.json();
+                                setLastDrainResponse({
+                                  ...j,
+                                  at: new Date().toISOString(),
+                                });
+                                setMsg(
+                                  `Chain reiniciado. Procesados: ${j.processed ?? 0}, restantes: ${j.remaining ?? "?"}.`,
+                                );
+                                loadTranscriptStats();
+                              } catch (e) {
+                                setMsg(
+                                  `Error: ${e instanceof Error ? e.message : String(e)}`,
+                                );
+                              } finally {
+                                setBusyAction(null);
+                              }
+                            }}
+                            disabled={busyAction === "drain-force"}
+                            className="mt-2 rounded-md bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-800 disabled:opacity-50"
+                          >
+                            {busyAction === "drain-force"
+                              ? "Forzando…"
+                              : "Forzar reinicio del chain"}
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()
               ) : (
                 transcriptStats.totals.transcripts_pending > 0 && (
                   <div className="flex items-center gap-3">
