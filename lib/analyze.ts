@@ -40,14 +40,10 @@ export async function analyzeOneVideo(
     return { shortcode, ok: false, skipped: "no_video_url" };
   }
 
-  // Bump attempt counter up front so a crash doesn't loop us forever.
-  await sb
-    .from("videos")
-    .update({
-      analyze_attempts: (video.analyze_attempts || 0) + 1,
-      analyze_error: null,
-    })
-    .eq("shortcode", shortcode);
+  // Atomic increment via a SECURITY DEFINER function — avoids the race when
+  // two callers (cron + manual UI loop, for example) both read attempts=2
+  // and both write 3, silently allowing a 4th retry past the cap.
+  await sb.rpc("bump_analyze_attempts", { p_shortcode: shortcode });
 
   let transcript = video.transcript;
   let transcriptLang: string | null = null;

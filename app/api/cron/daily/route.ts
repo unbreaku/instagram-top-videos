@@ -104,6 +104,8 @@ export async function GET(req: Request) {
     let processed = 0;
     let skipped = 0;
     let failed = 0;
+    // Plain .order() — { nullsFirst: false } in Supabase silently drops top
+    // rows under certain limits. Secondary key for deterministic ties.
     const { data: candidates } = await sb
       .from("videos")
       .select("shortcode")
@@ -112,7 +114,8 @@ export async function GET(req: Request) {
       .lt("analyze_attempts", 3)
       .not("video_url", "is", null)
       .gte("latest_views", ANALYZE_MIN_VIEWS)
-      .order("latest_views", { ascending: false, nullsFirst: false })
+      .order("latest_views", { ascending: false })
+      .order("shortcode", { ascending: true })
       .limit(ANALYZE_BACKFILL_PER_ACCOUNT);
     for (const c of candidates || []) {
       if (Date.now() > deadline) break;

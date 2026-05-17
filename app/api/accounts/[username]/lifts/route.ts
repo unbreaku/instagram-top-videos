@@ -50,9 +50,21 @@ export async function GET(_req: Request, { params }: Params) {
   }>;
 
   // Build day-bucketed snapshots (last snapshot of each calendar day).
+  // We bucket by the user's local-ish day (Bogotá / America/Bogota, UTC-5)
+  // instead of raw UTC. Otherwise a cron firing at 03:00 UTC Tuesday would
+  // get bucketed into "Tuesday" while the action visibly happened Monday
+  // evening for the user, and the dashboard would show empty days.
+  const tzFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const localDay = (iso: string) => tzFormatter.format(new Date(iso)); // YYYY-MM-DD
+
   const byDay = new Map<string, { date: string; followers: number; capturedAt: string }>();
   for (const s of snaps) {
-    const day = s.captured_at.slice(0, 10);
+    const day = localDay(s.captured_at);
     const prev = byDay.get(day);
     if (!prev || s.captured_at > prev.capturedAt) {
       byDay.set(day, { date: day, followers: s.followers_count, capturedAt: s.captured_at });

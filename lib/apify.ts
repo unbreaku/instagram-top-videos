@@ -263,7 +263,13 @@ export async function getRunStatus(runId: string): Promise<RunStatus> {
   const j = (await res.json()) as {
     data?: { status?: RunStatus["status"]; stats?: { inputBodyLen?: number } };
   };
-  return { status: j.data?.status || "RUNNING" };
+  // Throw instead of defaulting to RUNNING — a missing status field means
+  // the response is malformed (transient Apify edge / rate limit / changed
+  // schema) and the caller should know rather than spin forever.
+  if (!j?.data?.status) {
+    throw new Error("Apify status response missing data.status");
+  }
+  return { status: j.data.status };
 }
 
 /**

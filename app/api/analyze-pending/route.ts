@@ -29,6 +29,9 @@ export async function POST(req: Request) {
   const minViews = Number(searchParams.get("min_views") ?? MIN_VIEWS);
   const batch = Math.min(Math.max(Number(searchParams.get("batch") ?? BATCH), 1), 10);
 
+  // We previously used { nullsFirst: false }, but in Supabase that option
+  // combined with a high enough limit silently drops the top rows of the
+  // sorted result. Plain .order() + a deterministic secondary key is safe.
   let q = sb
     .from("videos")
     .select("shortcode, account_username, latest_views")
@@ -36,7 +39,8 @@ export async function POST(req: Request) {
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("latest_views", minViews)
-    .order("latest_views", { ascending: false, nullsFirst: false })
+    .order("latest_views", { ascending: false })
+    .order("shortcode", { ascending: true })
     .limit(batch);
   if (account) q = q.eq("account_username", account);
 

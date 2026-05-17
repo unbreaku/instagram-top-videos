@@ -26,6 +26,10 @@ const PROTECTED_API: ApiRule[] = [
   { method: "PATCH", pathPrefix: "/api/accounts/" },
   { method: "DELETE", pathPrefix: "/api/accounts/" },
   { method: "POST", pathPrefix: "/api/scrape-account" },
+  // /api/scrape-account/[runId] is GET-only but does ingest + writes.
+  // Without this rule any anonymous visitor could trigger Apify dataset
+  // fetches + Supabase writes simply by guessing run IDs.
+  { method: "GET", pathPrefix: "/api/scrape-account/" },
   { method: "POST", pathPrefix: "/api/refresh-account" },
   { method: "POST", pathPrefix: "/api/accounts/preview" },
   { method: "POST", pathPrefix: "/api/analyze-pending" },

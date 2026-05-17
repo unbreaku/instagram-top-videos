@@ -65,12 +65,16 @@ function attributeFollowers(
       0,
     );
     for (const v of inWindow) {
-      if (totalViews > 0) {
-        const share = ((v.latest_views || 0) / totalViews) * delta;
-        map.set(v.shortcode, Math.round(share));
-      } else {
-        map.set(v.shortcode, Math.round(delta / inWindow.length));
-      }
+      const share =
+        totalViews > 0
+          ? ((v.latest_views || 0) / totalViews) * delta
+          : delta / inWindow.length;
+      // ACCUMULATE — a video that falls inside multiple snapshot windows
+      // (e.g. when the cron runs more than once a day, or when "Refrescar
+      // últimos 10" is hit several times in a row) should sum each window's
+      // attributed share, not overwrite with only the last one.
+      const prev = map.get(v.shortcode) ?? 0;
+      map.set(v.shortcode, Math.round(prev + share));
     }
   }
   return map;

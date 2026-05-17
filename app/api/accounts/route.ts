@@ -124,13 +124,32 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   const sb = getServerSupabase();
-  // Upsert — and if the row was previously soft-deleted, undelete it.
-  const { error } = await sb.from("accounts").upsert({
-    username,
-    is_pinned: Boolean(body.is_pinned),
-    deleted_at: null,
-  });
-  if (error)
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  // Insert-or-undelete without clobbering existing flags. An UPSERT would
+  // overwrite is_pinned with whatever the caller sent (or `false` by default),
+  // silently un-pinning an account that the user re-typed in the verify form.
+  const { data: existing } = await sb
+    .from("accounts")
+    .select("username, is_pinned, deleted_at")
+    .eq("username", username)
+    .maybeSingle();
+
+  if (!existing) {
+    const { error } = await sb.from("accounts").insert({
+      username,
+      is_pinned: Boolean(body.is_pinned),
+    });
+    if (error)
+      return NextResponse.json({ error: error.message }, { status: 500 });
+  } else {
+    // Only touch is_pinned if the caller explicitly provided it.
+    const update: Record<string, unknown> = { deleted_at: null };
+    if (typeof body.is_pinned === "boolean") update.is_pinned = body.is_pinned;
+    const { error } = await sb
+      .from("accounts")
+      .update(update)
+      .eq("username", username);
+    if (error)
+      return NextResponse.json({ error: error.message }, { status: 500 });
+  }
   return NextResponse.json({ ok: true, username });
 }
