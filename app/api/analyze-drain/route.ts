@@ -67,6 +67,10 @@ export async function POST(req: Request) {
     200,
   );
   const depth = Number(url.searchParams.get("_depth") ?? 0);
+  // PANIC MODE: ignore the attempts cap, reset failed videos, force re-run
+  // of every video with video_url in the 90d window regardless of transcript
+  // state. Use when normal drain is stuck and you don't trust the filters.
+  const panic = url.searchParams.get("panic") === "1";
 
   const sb = getServerSupabase();
   const windowCutoff = new Date(
@@ -120,20 +124,42 @@ export async function POST(req: Request) {
     // Non-fatal — the worst case is the drain still doesn't see them.
   }
 
+  // PANIC: reset attempts on ALL videos in the 90d window so nothing is
+  // blocked by previous failure caps. Then the query below picks them up.
+  let panicReset = 0;
+  if (panic && depth === 0) {
+    const { data: r } = await sb
+      .from("videos")
+      .update({ analyze_attempts: 0, analyze_error: null })
+      .gte("analyze_attempts", 1)
+      .not("video_url", "is", null)
+      .gte("posted_at", windowCutoff)
+      .select("shortcode");
+    panicReset = (r || []).length;
+  }
+
   // Filter on TRANSCRIPT (not analyzed_at) because that's what stats counts
   // as "pending" and what the user actually cares about. Using analyzed_at
   // would silently skip videos where a previous run set analyzed_at but the
   // transcript came back empty/null (zombies).
+  //
+  // In panic mode we drop the attempts cap AND ignore current transcript
+  // state — every video with video_url in window gets re-attempted.
   let q = sb
     .from("videos")
     .select("shortcode, account_username")
-    .is("transcript", null)
-    .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff)
     .order("latest_views", { ascending: false })
     .order("shortcode", { ascending: true })
     .limit(FETCH_PER_CALL);
+  if (!panic) {
+    q = q.is("transcript", null).lt("analyze_attempts", 3);
+  } else {
+    // In panic mode, still skip videos that already have a non-empty
+    // transcript — re-running them is pure waste.
+    q = q.or("transcript.is.null,transcript.eq.");
+  }
   if (account) q = q.eq("account_username", account);
 
   const { data: candidates, error } = await q;
@@ -196,6 +222,7 @@ export async function POST(req: Request) {
     if (host && process.env.CRON_SECRET) {
       const nextUrl = new URL(`${proto}://${host}/api/analyze-drain`);
       if (account) nextUrl.searchParams.set("account", account);
+      if (panic) nextUrl.searchParams.set("panic", "1");
       nextUrl.searchParams.set("max_chain", String(maxChain));
       nextUrl.searchParams.set("_depth", String(depth + 1));
       // AbortController limits the wait to ~3s; we just need the connection
@@ -230,6 +257,8 @@ export async function POST(req: Request) {
     processed: results.length,
     remaining: remaining ?? null,
     normalized_empty_transcripts: normalized,
+    panic,
+    panic_reset_attempts: panicReset,
     chained,
     chain_error: chainError,
     depth,

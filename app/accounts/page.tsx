@@ -1026,6 +1026,7 @@ export default function AccountsPage() {
                       <th className="px-3 py-2 text-right">Fallidos</th>
                       <th className="px-3 py-2 text-right">Min audio</th>
                       <th className="px-3 py-2 text-right">Costo USD</th>
+                      <th className="px-3 py-2 text-right">Acción</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1049,6 +1050,50 @@ export default function AccountsPage() {
                         <td className="px-3 py-2 text-right tabular-nums text-zinc-900">
                           ${a.estimated_cost_usd.toFixed(2)}
                         </td>
+                        <td className="px-3 py-2 text-right">
+                          {a.transcripts_pending + a.transcripts_failed > 0 ? (
+                            <button
+                              onClick={async () => {
+                                if (
+                                  !confirm(
+                                    `🔥 Forzar transcripción de TODOS los videos de @${a.username} en los últimos 90 días.\n\nResetea attempts, ignora estado actual, re-procesa zombies/fallidos. Costo estimado: ~$${a.estimated_cost_usd.toFixed(2)}.\n\n¿Continuar?`,
+                                  )
+                                )
+                                  return;
+                                setBusyAction(`panic-${a.username}`);
+                                try {
+                                  const r = await fetch(
+                                    `/api/analyze-drain?account=${encodeURIComponent(a.username)}&panic=1&force=1`,
+                                    { method: "POST" },
+                                  );
+                                  const j = await r.json();
+                                  setLastDrainResponse({
+                                    ...j,
+                                    at: new Date().toISOString(),
+                                  });
+                                  setMsg(
+                                    `🔥 Panic mode arrancado para @${a.username}. Reset: ${j.panic_reset_attempts ?? 0} attempts, normalizó: ${j.normalized_empty_transcripts ?? 0} empty. Procesados en lote inicial: ${j.processed ?? 0}, restantes: ${j.remaining ?? "?"}.`,
+                                  );
+                                  loadTranscriptStats();
+                                } catch (e) {
+                                  setMsg(
+                                    `Error: ${e instanceof Error ? e.message : String(e)}`,
+                                  );
+                                } finally {
+                                  setBusyAction(null);
+                                }
+                              }}
+                              disabled={busyAction === `panic-${a.username}`}
+                              className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                            >
+                              {busyAction === `panic-${a.username}`
+                                ? "🔥…"
+                                : "🔥 Forzar"}
+                            </button>
+                          ) : (
+                            <span className="text-zinc-300">—</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                     <tr className="border-t-2 border-zinc-300 bg-zinc-50 font-semibold">
@@ -1066,6 +1111,7 @@ export default function AccountsPage() {
                       <td className="px-3 py-2 text-right tabular-nums">
                         ${transcriptStats.totals.estimated_cost_usd.toFixed(2)}
                       </td>
+                      <td className="px-3 py-2"></td>
                     </tr>
                   </tbody>
                 </table>
