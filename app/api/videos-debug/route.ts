@@ -17,6 +17,34 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const username = url.searchParams.get("u") || "pablocasasa";
 
+  // ALSO hit the real videos endpoint internally to see what THAT returns.
+  // The page uses ?sort=posted&limit=1000 — match it exactly.
+  const proto = req.headers.get("x-forwarded-proto") || "https";
+  const host = req.headers.get("host");
+  let realEndpointSample: unknown = null;
+  if (host) {
+    try {
+      const r = await fetch(
+        `${proto}://${host}/api/accounts/${encodeURIComponent(username)}/videos?sort=posted&limit=1000`,
+      );
+      const j = await r.json();
+      const firstVideo = j.videos?.[0];
+      realEndpointSample = {
+        status: r.status,
+        total_videos: j.videos?.length ?? 0,
+        first_video_keys: firstVideo ? Object.keys(firstVideo) : null,
+        first_video_transcript_present: !!firstVideo?.transcript,
+        first_video_transcript_length: firstVideo?.transcript?.length ?? null,
+        first_video_hook_present: !!firstVideo?.hook,
+        first_video_analyze_attempts: firstVideo?.analyze_attempts ?? null,
+        first_video_video_url_present: !!firstVideo?.video_url,
+        first_video_shortcode: firstVideo?.shortcode,
+      };
+    } catch (e) {
+      realEndpointSample = { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   const { data, error } = await sb
     .from("videos")
     .select(
@@ -67,5 +95,10 @@ export async function GET(req: Request) {
     };
   });
 
-  return NextResponse.json({ username, computed, raw_count: (data || []).length });
+  return NextResponse.json({
+    username,
+    computed,
+    raw_count: (data || []).length,
+    real_endpoint_sample: realEndpointSample,
+  });
 }
