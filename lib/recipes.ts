@@ -187,7 +187,7 @@ Voz: ${starDissection.voice.tone} — ${starDissection.voice.register}
 Pilares temáticos: ${starDissection.pillars.map((p) => `${p.theme} (${p.percentage}%)`).join(", ")}
 
 DATOS DURO 1 — formatos donde la estrella YA RINDE (≥1.5× su promedio de views):
-${starStrongTop.length === 0 ? "(ninguno destacado todavía)" : starStrongTop.map((s) => `  • ${s.tag}: ${s.count} posts, avg ${s.star_avg_views.toLocaleString()} views`).join("\n")}
+${starStrongTop.length === 0 ? "(ninguno destacado todavía)" : starStrongTop.map((s) => `  • ${s.tag}: ${s.star_count} posts, avg ${s.star_avg_views.toLocaleString()} views`).join("\n")}
 
 DATOS DURO 2 — formatos que MÚLTIPLES GUIDES usan exitosamente y la estrella NO usa (≤2 veces):
 ${starMissingTop.length === 0 ? "(ninguno; la estrella ya cubre todo lo que hacen los guides)" : starMissingTop.slice(0, 10).map((g) => `  • ${g.tag}: ${g.guide_count} posts en ${g.guides.length} guides (${g.guides.join(", ")}), avg ${g.guide_avg_views.toLocaleString()} views`).join("\n")}
