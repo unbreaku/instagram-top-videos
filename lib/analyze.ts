@@ -4,6 +4,7 @@
  */
 
 import { analyzeVideo } from "./anthropic";
+import { refreshSingleVideo } from "./apify";
 import { transcribeUrl } from "./deepgram";
 import { getServerSupabase } from "./supabase";
 
@@ -15,6 +16,23 @@ export interface AnalyzeOneResult {
   cta?: string;
   format_tags?: string[];
   error?: string;
+  url_refreshed?: boolean;
+}
+
+/**
+ * Deepgram REMOTE_CONTENT_ERROR (and other "can't fetch URL" failures) mean
+ * the Instagram CDN URL has expired. Tokens are time-limited and typically
+ * die 6-24h after the original scrape. When we see this, we re-scrape the
+ * single post via Apify (~$0.005) to get a fresh URL and retry Deepgram once.
+ */
+function isExpiredUrlError(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("remote_content_error") ||
+    lower.includes("remote server hosting the media") ||
+    lower.includes(" 403") ||
+    lower.includes("forbidden")
+  );
 }
 
 export async function analyzeOneVideo(
@@ -47,11 +65,40 @@ export async function analyzeOneVideo(
 
   let transcript = video.transcript;
   let transcriptLang: string | null = null;
+  let urlRefreshed = false;
+  let videoUrl: string | null = video.video_url;
   try {
-    if (!transcript) {
-      const t = await transcribeUrl(video.video_url);
-      transcript = t.transcript;
-      transcriptLang = t.language;
+    if (!transcript && videoUrl) {
+      try {
+        const t = await transcribeUrl(videoUrl);
+        transcript = t.transcript;
+        transcriptLang = t.language;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Auto-recovery: if Deepgram says the Instagram CDN URL is dead,
+        // re-scrape just this one post via Apify to get a fresh URL, then
+        // retry transcription ONCE. Avoids losing videos to expired tokens.
+        if (isExpiredUrlError(msg)) {
+          const fresh = await refreshSingleVideo(shortcode);
+          if (fresh?.videoUrl && fresh.videoUrl !== videoUrl) {
+            videoUrl = fresh.videoUrl;
+            urlRefreshed = true;
+            await sb
+              .from("videos")
+              .update({ video_url: videoUrl })
+              .eq("shortcode", shortcode);
+            const t2 = await transcribeUrl(videoUrl);
+            transcript = t2.transcript;
+            transcriptLang = t2.language;
+          } else {
+            // Refresh didn't give us a new URL (post deleted? private? actor
+            // returned nothing). Re-throw the original Deepgram error.
+            throw e;
+          }
+        } else {
+          throw e;
+        }
+      }
       await sb
         .from("videos")
         .update({
@@ -67,7 +114,7 @@ export async function analyzeOneVideo(
       .from("videos")
       .update({ analyze_error: `transcribe: ${msg.slice(0, 400)}` })
       .eq("shortcode", shortcode);
-    return { shortcode, ok: false, error: msg };
+    return { shortcode, ok: false, error: msg, url_refreshed: urlRefreshed };
   }
 
   let analysis;
@@ -103,5 +150,6 @@ export async function analyzeOneVideo(
     hook: analysis.hook,
     cta: analysis.cta,
     format_tags: analysis.format_tags,
+    url_refreshed: urlRefreshed,
   };
 }

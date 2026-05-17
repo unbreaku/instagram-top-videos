@@ -186,6 +186,43 @@ function token(): string {
 }
 
 /**
+ * Re-scrapes a single post by its shortcode to get a fresh video_url. Used
+ * when Deepgram fails with REMOTE_CONTENT_ERROR (Instagram CDN URL expired,
+ * typically 6-24h after the original scrape).
+ *
+ * Cheaper than re-scraping the whole account — one post fetch costs about
+ * $0.005 vs ~$0.05 for a full N-post account refresh.
+ */
+export async function refreshSingleVideo(
+  shortcode: string,
+): Promise<ApifyInstagramItem | null> {
+  const url = `${APIFY_BASE}/acts/${APIFY_ACTOR}/run-sync-get-dataset-items?token=${encodeURIComponent(
+    token(),
+  )}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      directUrls: [`https://www.instagram.com/p/${shortcode}/`],
+      resultsType: "posts",
+      resultsLimit: 1,
+      addParentData: false,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Apify single-video fetch failed (${res.status}): ${text.slice(0, 200)}`,
+    );
+  }
+  const items = (await res.json()) as ApifyInstagramItem[];
+  if (!Array.isArray(items) || items.length === 0) return null;
+  // Should be exactly one item. Take the first match by shortcode (or just
+  // the first, since we asked for exactly one URL).
+  return items.find((it) => it.shortCode === shortcode) ?? items[0];
+}
+
+/**
  * Synchronous run for small/fast scrapes. Returns dataset items.
  * Will time out if the actor takes too long.
  */

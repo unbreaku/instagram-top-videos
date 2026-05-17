@@ -752,6 +752,42 @@ export default function AccountsPage() {
                     >
                       Refrescar conteos
                     </button>
+                    {transcriptStats.totals.transcripts_failed > 0 && (
+                      <button
+                        onClick={async () => {
+                          setBusyAction("retry");
+                          setMsg(
+                            `Reseteando ${transcriptStats.totals.transcripts_failed} fallidos…`,
+                          );
+                          try {
+                            const r = await fetch("/api/retry-failed", {
+                              method: "POST",
+                            });
+                            const j = await r.json();
+                            if (r.ok) {
+                              setMsg(
+                                `${j.reset} fallidos reseteados. El próximo drenado los reintentará con auto-refetch de URL.`,
+                              );
+                              loadTranscriptStats();
+                            } else {
+                              setMsg(`Error: ${j.error || "desconocido"}`);
+                            }
+                          } catch (e) {
+                            setMsg(
+                              `Error: ${e instanceof Error ? e.message : String(e)}`,
+                            );
+                          } finally {
+                            setBusyAction(null);
+                          }
+                        }}
+                        disabled={busyAction === "retry"}
+                        className="rounded-md border border-red-300 bg-white px-3 py-2 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        {busyAction === "retry"
+                          ? "Reseteando…"
+                          : `Reintentar ${transcriptStats.totals.transcripts_failed} fallidos`}
+                      </button>
+                    )}
                   </div>
                 )
               )}
