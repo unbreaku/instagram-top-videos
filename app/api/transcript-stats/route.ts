@@ -23,7 +23,6 @@ export const dynamic = "force-dynamic";
  */
 const DEEPGRAM_USD_PER_MIN = 0.0058;
 const ANTHROPIC_USD_PER_VIDEO = 0.0025;
-const ANTHROPIC_USD_PER_PHOTO = 0.0025; // photos still get caption analysis
 const WINDOW_DAYS = 90;
 
 interface AccountStats {
@@ -57,11 +56,12 @@ export async function GET() {
   // Helper: run a HEAD count with a filter callback. Avoids fetching any row
   // data, just gets `count` back from PostgREST. Multi-MB transcripts never
   // touch the wire.
-  async function count(
-    username: string,
-    apply: (q: ReturnType<typeof sb.from>) => any,
-  ): Promise<number> {
-    let q = sb
+  // We use `any` for the builder type because Supabase's generic chain types
+  // are deeply nested and don't survive function-parameter inference cleanly
+  // across versions. Runtime behavior is identical.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function count(username: string, apply: (q: any) => any): Promise<number> {
+    let q: any = sb
       .from("videos")
       .select("shortcode", { count: "exact", head: true })
       .eq("account_username", username)
