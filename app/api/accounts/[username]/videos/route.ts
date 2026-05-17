@@ -112,11 +112,23 @@ export async function GET(req: Request, { params }: Params) {
   };
   const col = sortCol[sort] || "latest_views";
 
+  // We deliberately do NOT select the `transcript` text column here. With
+  // hundreds of videos × multi-KB transcripts, the response gets large
+  // enough that Vercel/Supabase compresses + chunks it and the first row
+  // sometimes comes back with fields silently empty. Bug observed: Pablo
+  // had 78 videos with transcripts in the DB, but the FIRST row returned
+  // by /videos with limit=1000 had transcript=null, hook=null, attempts=0
+  // — even though limit=1 returned the same row fully populated.
+  //
+  // The table only needs to know IF a transcript exists (to render the
+  // badge), not the text. We compute a `has_transcript` boolean below.
+  // When the user expands a row, the page fetches the full transcript on
+  // demand via /api/videos/[shortcode]/transcript.
   const [videosRes, snapshotsRes] = await Promise.all([
     sb
       .from("videos")
       .select(
-        "shortcode, account_username, type, caption, posted_at, url, video_url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook, format_tags, analyzed_at, analyze_attempts",
+        "shortcode, account_username, type, caption, posted_at, url, video_url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, cta, hook, format_tags, analyzed_at, analyze_attempts",
       )
       .eq("account_username", username)
       // We previously passed nullsFirst:false to push photos with NULL views
@@ -143,20 +155,34 @@ export async function GET(req: Request, { params }: Params) {
     );
 
   const videos = (videosRes.data || []) as VideoRow[];
-  // DEBUG: log first video's transcript state so we can see what Supabase
-  // returned directly without any mapping. Delete after diagnosing.
-  if (videos[0]) {
-    console.log("[videos-route]", {
-      limit,
-      total_returned: videos.length,
-      first_shortcode: videos[0].shortcode,
-      first_transcript_present: !!videos[0].transcript,
-      first_transcript_length: videos[0].transcript?.length ?? null,
-      first_hook_present: !!videos[0].hook,
-      first_analyze_attempts: videos[0].analyze_attempts,
-      first_video_url_present: !!videos[0].video_url,
-    });
-  }
+
+  // Side query: fetch shortcodes that have a real transcript (NOT NULL,
+  // NOT empty, NOT the no-audio sentinel) and shortcodes that have the
+  // no-audio sentinel. Small payload (just shortcodes) so no truncation
+  // risk. Used to set has_transcript / is_no_audio on each video below.
+  const NO_AUDIO = "[sin audio detectable]";
+  const [realTranscriptsRes, noAudioRes] = await Promise.all([
+    sb
+      .from("videos")
+      .select("shortcode")
+      .eq("account_username", username)
+      .not("transcript", "is", null)
+      .neq("transcript", "")
+      .neq("transcript", NO_AUDIO)
+      .limit(999),
+    sb
+      .from("videos")
+      .select("shortcode")
+      .eq("account_username", username)
+      .eq("transcript", NO_AUDIO)
+      .limit(999),
+  ]);
+  const realTranscriptShortcodes = new Set(
+    (realTranscriptsRes.data || []).map((r) => (r as { shortcode: string }).shortcode),
+  );
+  const noAudioShortcodes = new Set(
+    (noAudioRes.data || []).map((r) => (r as { shortcode: string }).shortcode),
+  );
   const snapshots = (snapshotsRes.data || []) as SnapshotRow[];
   const { attribution, inWindowSet } = attributeFollowers(videos, snapshots);
 
@@ -165,10 +191,14 @@ export async function GET(req: Request, { params }: Params) {
   //             share (positive or negative or 0)
   //   null    → post pre-dates first snapshot, or falls between snapshots
   //             that never executed → attribution is "not measurable"
-  // The client renders null as "—" and 0 as "0", which used to look the
-  // same and led to "atribución no funciona" complaints.
+  //
+  // has_transcript / is_no_audio: computed from side queries above. The
+  // raw transcript text is NOT included to keep response size predictable.
+  // Page fetches full transcript on demand via /api/videos/[shortcode]/transcript.
   const out = videos.map((v) => ({
     ...v,
+    has_transcript: realTranscriptShortcodes.has(v.shortcode),
+    is_no_audio: noAudioShortcodes.has(v.shortcode),
     estimated_followers: inWindowSet.has(v.shortcode)
       ? (attribution.get(v.shortcode) ?? 0)
       : null,

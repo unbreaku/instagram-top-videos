@@ -28,7 +28,13 @@ interface Video {
   cta: string | null;
   format_tags: string[] | null;
   analyzed_at: string | null;
-  transcript: string | null;
+  // Bulk endpoint no longer sends the transcript text (too big to ship for
+  // 50+ videos without truncation). Use has_transcript / is_no_audio for
+  // the badge; fetch the full transcript on demand from
+  // /api/videos/[shortcode]/transcript when a row is expanded.
+  transcript?: string | null;
+  has_transcript?: boolean;
+  is_no_audio?: boolean;
   estimated_followers: number | null;
   analyze_attempts?: number | null;
   video_url?: string | null;
@@ -42,6 +48,10 @@ type TranscriptStatus = "done" | "no_audio" | "pending" | "failed" | "no_video";
 function transcriptStatus(v: Video): TranscriptStatus {
   // Photos / sidecars don't have audio at all.
   if (v.video_url === null) return "no_video";
+  // Prefer the bulk-endpoint booleans; fall back to inspecting transcript
+  // text for backwards compatibility if the endpoint still sends it.
+  if (v.is_no_audio === true) return "no_audio";
+  if (v.has_transcript === true) return "done";
   if (v.transcript === NO_AUDIO_SENTINEL) return "no_audio";
   if (v.transcript && v.transcript.length > 0) return "done";
   const attempts = v.analyze_attempts ?? 0;
@@ -162,6 +172,27 @@ export default function AccountPage({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Cache of transcript text per shortcode, fetched lazily when a row is
+  // expanded. The bulk /videos endpoint no longer ships transcript text
+  // (response was getting too large and Vercel was silently dropping fields
+  // for some rows). 'loading' = fetch in flight, string = loaded text,
+  // null = no transcript / fetch failed.
+  const [transcriptCache, setTranscriptCache] = useState<
+    Record<string, "loading" | string | null>
+  >({});
+  async function ensureTranscript(shortcode: string) {
+    if (transcriptCache[shortcode] !== undefined) return;
+    setTranscriptCache((c) => ({ ...c, [shortcode]: "loading" }));
+    try {
+      const r = await fetch(
+        `/api/videos/${encodeURIComponent(shortcode)}/transcript`,
+      );
+      const j = await r.json();
+      setTranscriptCache((c) => ({ ...c, [shortcode]: j.transcript ?? null }));
+    } catch {
+      setTranscriptCache((c) => ({ ...c, [shortcode]: null }));
+    }
+  }
   // Per-video ••• menu state. Only one menu open at a time (shortcode of
   // the row whose menu is open, or null).
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
@@ -1014,8 +1045,17 @@ export default function AccountPage({
               <tbody>
                 {sorted.map((v) => {
                   const isOpen = expanded.has(v.shortcode);
+                  // Bulk endpoint no longer includes transcript text; use
+                  // the has_transcript boolean instead. Sentinel-only rows
+                  // (is_no_audio=true) still get a drawer with the "sin audio"
+                  // message.
                   const hasDetail =
-                    !!v.transcript || !!v.hook || !!v.cta || !!v.caption;
+                    v.has_transcript === true ||
+                    v.is_no_audio === true ||
+                    !!v.hook ||
+                    !!v.cta ||
+                    !!v.caption ||
+                    !!v.transcript;
                   return (
                     <React.Fragment key={v.shortcode}>
                       <tr className="border-t border-zinc-100 hover:bg-zinc-50">
@@ -1109,13 +1149,17 @@ Símbolos:
                               ))}
                             </div>
                           )}
-                          {hasDetail && (
+                          {(hasDetail || v.has_transcript || v.is_no_audio) && (
                             <button
                               type="button"
                               onClick={() => {
                                 const next = new Set(expanded);
                                 if (isOpen) next.delete(v.shortcode);
-                                else next.add(v.shortcode);
+                                else {
+                                  next.add(v.shortcode);
+                                  // Lazy-load transcript on first expand
+                                  ensureTranscript(v.shortcode);
+                                }
                                 setExpanded(next);
                               }}
                               className="mt-2 text-[11px] text-blue-600 hover:underline"
@@ -1249,24 +1293,44 @@ Símbolos:
                                 <Block label="Caption original">{v.caption}</Block>
                               )}
                               <Block label="Transcript">
-                                {v.transcript === NO_AUDIO_SENTINEL ? (
-                                  <span className="text-zinc-500">
-                                    🔇 Sin audio detectable. Deepgram procesó
-                                    el video pero no encontró habla (silente o
-                                    solo música). Para reintentar, usá el menú
-                                    ••• → Forzar re-transcript.
-                                  </span>
-                                ) : v.transcript ? (
-                                  <span className="whitespace-pre-wrap">
-                                    {v.transcript}
-                                  </span>
-                                ) : (
-                                  <span className="text-zinc-400">
-                                    Sin transcript. {v.analyzed_at
-                                      ? "(El video probablemente no tiene audio detectable o el URL de Apify expiró antes de la transcripción.)"
-                                      : "El próximo drenado lo va a procesar — o usá el menú ••• para forzarlo ahora."}
-                                  </span>
-                                )}
+                                {(() => {
+                                  const cached = transcriptCache[v.shortcode];
+                                  if (cached === "loading") {
+                                    return (
+                                      <span className="text-zinc-400">
+                                        Cargando transcript…
+                                      </span>
+                                    );
+                                  }
+                                  // Prefer cached value (fetched lazily), fall
+                                  // back to v.transcript for backwards compat.
+                                  const text = cached ?? v.transcript ?? null;
+                                  if (text === NO_AUDIO_SENTINEL || v.is_no_audio) {
+                                    return (
+                                      <span className="text-zinc-500">
+                                        🔇 Sin audio detectable. Deepgram procesó
+                                        el video pero no encontró habla (silente
+                                        o solo música). Para reintentar, usá el
+                                        menú ••• → Forzar re-transcript.
+                                      </span>
+                                    );
+                                  }
+                                  if (text) {
+                                    return (
+                                      <span className="whitespace-pre-wrap">
+                                        {text}
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <span className="text-zinc-400">
+                                      Sin transcript.{" "}
+                                      {v.analyzed_at
+                                        ? "(El video probablemente no tiene audio detectable o el URL de Apify expiró antes de la transcripción.)"
+                                        : "El próximo drenado lo va a procesar — o usá el menú ••• para forzarlo ahora."}
+                                    </span>
+                                  );
+                                })()}
                               </Block>
                             </div>
                           </td>
