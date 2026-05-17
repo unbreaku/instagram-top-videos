@@ -45,17 +45,16 @@ export async function GET() {
     Date.now() - WINDOW_DAYS * 86400 * 1000,
   ).toISOString();
 
-  // Pull just the columns we need. Single round trip for the whole table.
-  // For 5k-10k videos this is well under the 6MB PostgREST response budget.
-  const { data, error } = await sb
-    .from("videos")
-    .select(
-      "account_username, video_url, transcript, analyze_attempts, duration_seconds, posted_at",
-    )
-    .order("account_username", { ascending: true });
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  // Seed the stats map from `accounts` so accounts with 0 videos still
+  // appear with zeros (otherwise they'd silently disappear from the panel).
+  // Excludes soft-deleted accounts so we don't render rows for trash.
+  const { data: accounts, error: accErr } = await sb
+    .from("accounts")
+    .select("username")
+    .is("deleted_at", null)
+    .order("username", { ascending: true });
+  if (accErr) {
+    return NextResponse.json({ error: accErr.message }, { status: 500 });
   }
 
   const byUser = new Map<string, AccountStats>();
@@ -69,32 +68,57 @@ export async function GET() {
     estimated_minutes: 0,
     estimated_cost_usd: 0,
   });
+  for (const a of accounts || []) {
+    byUser.set((a as { username: string }).username, blank(
+      (a as { username: string }).username,
+    ));
+  }
 
-  for (const v of data || []) {
-    const u = (v as { account_username: string }).account_username;
-    if (!u) continue;
-    if (!byUser.has(u)) byUser.set(u, blank(u));
-    const s = byUser.get(u)!;
-    const hasAudio = !!(v as { video_url: string | null }).video_url;
-    const hasTranscript = !!(v as { transcript: string | null }).transcript;
-    const attempts =
-      (v as { analyze_attempts: number | null }).analyze_attempts ?? 0;
-    const posted = (v as { posted_at: string | null }).posted_at;
-    const inWindow = posted ? posted >= cutoff : false;
-    const duration =
-      (v as { duration_seconds: number | null }).duration_seconds ?? 45;
-
-    s.videos_total += 1;
-    if (hasAudio) s.videos_with_audio += 1;
-    if (hasTranscript) s.transcripts_done += 1;
-    if (hasAudio && !hasTranscript && attempts >= 3) s.transcripts_failed += 1;
-
-    // PROPOSED policy: pending = transcribable + not yet done + retries left
-    // + within the 90-day window.
-    if (hasAudio && !hasTranscript && attempts < 3 && inWindow) {
-      s.transcripts_pending += 1;
-      s.estimated_minutes += duration / 60;
+  // Paginate through videos. PostgREST caps each response at ~1000 rows
+  // (max-rows). A single .select() with N accounts × hundreds of videos
+  // would silently truncate to the alphabetically-first accounts, which is
+  // exactly the bug this fixes — only andresbilbao + crece30x showed up.
+  const PAGE = 999; // staying under the 1000 cliff (see videos route comment)
+  let offset = 0;
+  while (true) {
+    const { data, error } = await sb
+      .from("videos")
+      .select(
+        "account_username, video_url, transcript, analyze_attempts, duration_seconds, posted_at",
+      )
+      .order("account_username", { ascending: true })
+      .order("shortcode", { ascending: true })
+      .range(offset, offset + PAGE - 1);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
+    const rows = data || [];
+    for (const v of rows) {
+      const u = (v as { account_username: string }).account_username;
+      if (!u) continue;
+      if (!byUser.has(u)) byUser.set(u, blank(u));
+      const s = byUser.get(u)!;
+      const hasAudio = !!(v as { video_url: string | null }).video_url;
+      const hasTranscript = !!(v as { transcript: string | null }).transcript;
+      const attempts =
+        (v as { analyze_attempts: number | null }).analyze_attempts ?? 0;
+      const posted = (v as { posted_at: string | null }).posted_at;
+      const inWindow = posted ? posted >= cutoff : false;
+      const duration =
+        (v as { duration_seconds: number | null }).duration_seconds ?? 45;
+
+      s.videos_total += 1;
+      if (hasAudio) s.videos_with_audio += 1;
+      if (hasTranscript) s.transcripts_done += 1;
+      if (hasAudio && !hasTranscript && attempts >= 3)
+        s.transcripts_failed += 1;
+      if (hasAudio && !hasTranscript && attempts < 3 && inWindow) {
+        s.transcripts_pending += 1;
+        s.estimated_minutes += duration / 60;
+      }
+    }
+    if (rows.length < PAGE) break; // last page
+    offset += PAGE;
   }
 
   for (const s of byUser.values()) {
