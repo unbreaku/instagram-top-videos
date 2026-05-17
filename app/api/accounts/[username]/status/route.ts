@@ -47,7 +47,13 @@ export async function GET(_req: Request, { params }: Params) {
         .eq("account_username", username)
         .is("analyzed_at", null)
         .not("video_url", "is", null)
-        .gte("latest_views", 5000),
+        // Same 90-day window as the cron / analyze-pending policy. Counts
+        // ALL videos in window without a view threshold (we now transcribe
+        // everything, cost is negligible at ~$0.007/video).
+        .gte(
+          "posted_at",
+          new Date(Date.now() - 90 * 86400 * 1000).toISOString(),
+        ),
       sb
         .from("videos")
         .select("shortcode", { count: "exact", head: true })

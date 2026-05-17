@@ -71,7 +71,13 @@ export async function GET(req: Request) {
             .eq("account_username", u)
             .is("analyzed_at", null)
             .not("video_url", "is", null)
-            .gte("latest_views", 5000)
+            // Match the analyze-pending / cron policy: trailing 90 days,
+            // no minimum-views threshold. Counts what the backlog actually
+            // contains under current rules.
+            .gte(
+              "posted_at",
+              new Date(Date.now() - 90 * 86400 * 1000).toISOString(),
+            )
             .then(({ count }) => ({ u, count: count ?? 0 })),
         ),
       ),

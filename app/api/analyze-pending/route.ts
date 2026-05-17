@@ -10,8 +10,11 @@ export const maxDuration = 60;
 // Process this many videos per call. Transcribing + analyzing ~10s/video, so
 // ~5 is safe within the 60s Vercel timeout.
 const BATCH = 5;
-// Only analyze videos with at least this many views — saves money on noise.
-const MIN_VIEWS = 5000;
+// Trailing window of posts eligible for analysis. Matches the cron policy
+// (lib/cron/daily/route.ts). The view-based threshold was removed — cost
+// per video is ~$0.007 and we'd rather transcribe everything than skip
+// content the user might want to compare.
+const WINDOW_DAYS = 90;
 
 /**
  * Picks the next batch of unanalyzed videos (highest views first) and runs
@@ -19,15 +22,21 @@ const MIN_VIEWS = 5000;
  *
  * Filterable with query params:
  *   ?account=<username>   Only analyze videos from this account
- *   ?min_views=<n>        Override default minimum view threshold
+ *   ?days=<n>             Override trailing window (default 90)
  *   ?batch=<n>            Override batch size (clamped 1..10)
  */
 export async function POST(req: Request) {
   const sb = getServerSupabase();
   const { searchParams } = new URL(req.url);
   const account = searchParams.get("account");
-  const minViews = Number(searchParams.get("min_views") ?? MIN_VIEWS);
-  const batch = Math.min(Math.max(Number(searchParams.get("batch") ?? BATCH), 1), 10);
+  const days = Number(searchParams.get("days") ?? WINDOW_DAYS);
+  const batch = Math.min(
+    Math.max(Number(searchParams.get("batch") ?? BATCH), 1),
+    10,
+  );
+  const windowCutoff = new Date(
+    Date.now() - days * 86400 * 1000,
+  ).toISOString();
 
   // We previously used { nullsFirst: false }, but in Supabase that option
   // combined with a high enough limit silently drops the top rows of the
@@ -38,7 +47,7 @@ export async function POST(req: Request) {
     .is("analyzed_at", null)
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
-    .gte("latest_views", minViews)
+    .gte("posted_at", windowCutoff)
     .order("latest_views", { ascending: false })
     .order("shortcode", { ascending: true })
     .limit(batch);
@@ -61,7 +70,7 @@ export async function POST(req: Request) {
     .is("analyzed_at", null)
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
-    .gte("latest_views", minViews);
+    .gte("posted_at", windowCutoff);
 
   return NextResponse.json({
     processed: results.length,

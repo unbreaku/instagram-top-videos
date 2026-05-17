@@ -9,11 +9,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// How many backlog videos to analyze per cron run, per account. Small enough
-// to fit within the function timeout (~5s each = ~30s for 6 videos), big
-// enough that we eventually catch up on a couple thousand videos over weeks.
-const ANALYZE_BACKFILL_PER_ACCOUNT = 6;
-const ANALYZE_MIN_VIEWS = 5000;
+// How many backlog videos to analyze per cron run, per account. ~3s per
+// video typical → 10 videos fits comfortably under the 45s analyze budget.
+const ANALYZE_BACKFILL_PER_ACCOUNT = 10;
+// Policy: transcribe EVERY video posted in the trailing 90-day window.
+// Previously gated at 5k views, which silently skipped low-performing
+// content the user still cared to compare. Cost is tiny (~$0.007 per
+// video, one-time per video — transcripts are cached on the row).
+const ANALYZE_WINDOW_DAYS = 90;
 
 // How many latest posts to fetch per pinned account daily. Kept small to
 // minimize Apify spend; manual "Refrescar histórico completo" exists in the UI
@@ -106,6 +109,9 @@ export async function GET(req: Request) {
     let failed = 0;
     // Plain .order() — { nullsFirst: false } in Supabase silently drops top
     // rows under certain limits. Secondary key for deterministic ties.
+    const windowCutoff = new Date(
+      Date.now() - ANALYZE_WINDOW_DAYS * 86400 * 1000,
+    ).toISOString();
     const { data: candidates } = await sb
       .from("videos")
       .select("shortcode")
@@ -113,7 +119,9 @@ export async function GET(req: Request) {
       .is("analyzed_at", null)
       .lt("analyze_attempts", 3)
       .not("video_url", "is", null)
-      .gte("latest_views", ANALYZE_MIN_VIEWS)
+      .gte("posted_at", windowCutoff)
+      // Highest-view first so the most-watched / most-valuable videos get
+      // transcribed first while the backlog drains. Null views sort last.
       .order("latest_views", { ascending: false })
       .order("shortcode", { ascending: true })
       .limit(ANALYZE_BACKFILL_PER_ACCOUNT);

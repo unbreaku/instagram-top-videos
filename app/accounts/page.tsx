@@ -84,6 +84,24 @@ export default function AccountsPage() {
   const [migrations, setMigrations] = useState<MigrationListResponse | null>(
     null,
   );
+  const [transcriptStats, setTranscriptStats] = useState<{
+    totals: {
+      videos_total: number;
+      videos_with_audio: number;
+      transcripts_done: number;
+      transcripts_pending: number;
+      transcripts_failed: number;
+      estimated_cost_usd: number;
+    };
+    accounts: Array<{
+      username: string;
+      transcripts_done: number;
+      transcripts_pending: number;
+      transcripts_failed: number;
+      estimated_minutes: number;
+      estimated_cost_usd: number;
+    }>;
+  } | null>(null);
 
   async function refresh() {
     const res = await fetch("/api/accounts");
@@ -95,10 +113,20 @@ export default function AccountsPage() {
     const j = await res.json();
     setMigrations(j);
   }
+  async function loadTranscriptStats() {
+    try {
+      const res = await fetch("/api/transcript-stats");
+      const j = await res.json();
+      setTranscriptStats(j);
+    } catch {
+      // non-fatal; panel just won't render.
+    }
+  }
 
   useEffect(() => {
     refresh();
     loadMigrations();
+    loadTranscriptStats();
   }, []);
 
   // Poll-refresh while any background scrape is active so badges update on
@@ -580,6 +608,95 @@ export default function AccountsPage() {
           </li>
         )}
       </ul>
+
+      {transcriptStats && (
+        <section className="mt-12">
+          <details className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm" open>
+            <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-zinc-500">
+              Estado de transcripts ·{" "}
+              <span className="text-emerald-700">
+                {transcriptStats.totals.transcripts_done} hechos
+              </span>
+              {" · "}
+              <span className="text-amber-700">
+                {transcriptStats.totals.transcripts_pending} pendientes
+              </span>
+              {transcriptStats.totals.transcripts_failed > 0 && (
+                <>
+                  {" · "}
+                  <span className="text-red-700">
+                    {transcriptStats.totals.transcripts_failed} fallidos
+                  </span>
+                </>
+              )}
+              {" · costo ~$"}
+              {transcriptStats.totals.estimated_cost_usd.toFixed(2)} para limpiar pendientes
+            </summary>
+            <div className="mt-4 space-y-3">
+              <p className="rounded-md bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-600">
+                Política propuesta: <strong>todos los videos de los últimos
+                90 días, sin filtro de vistas mínimo</strong>. Los transcripts
+                existentes no se vuelven a procesar (se leen de la BD).
+                Costo = Deepgram $0.0058/min + Claude Haiku $0.0025/video.
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
+                    <tr>
+                      <th className="px-3 py-2">Cuenta</th>
+                      <th className="px-3 py-2 text-right">Transcriptos</th>
+                      <th className="px-3 py-2 text-right">Pendientes (90d)</th>
+                      <th className="px-3 py-2 text-right">Fallidos</th>
+                      <th className="px-3 py-2 text-right">Min audio</th>
+                      <th className="px-3 py-2 text-right">Costo USD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transcriptStats.accounts.map((a) => (
+                      <tr key={a.username} className="border-t border-zinc-100">
+                        <td className="px-3 py-2 font-mono text-zinc-700">
+                          @{a.username}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-emerald-700">
+                          {a.transcripts_done}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-amber-700">
+                          {a.transcripts_pending}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-red-700">
+                          {a.transcripts_failed || "—"}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-zinc-500">
+                          {a.estimated_minutes.toFixed(1)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-zinc-900">
+                          ${a.estimated_cost_usd.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t-2 border-zinc-300 bg-zinc-50 font-semibold">
+                      <td className="px-3 py-2 text-zinc-700">Total</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {transcriptStats.totals.transcripts_done}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {transcriptStats.totals.transcripts_pending}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {transcriptStats.totals.transcripts_failed || "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">—</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        ${transcriptStats.totals.estimated_cost_usd.toFixed(2)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+        </section>
+      )}
 
       {migrations && (
         <section className="mt-12">
