@@ -38,6 +38,8 @@ const PROTECTED_API: ApiRule[] = [
   { method: "GET", pathPrefix: "/api/migrate" },
   { method: "POST", pathPrefix: "/api/sweep-runs" },
   { method: "POST", pathPrefix: "/api/retry-failed" },
+  // Star dissection burns ~$1 of Sonnet per call → owner-only.
+  { method: "POST", pathPrefix: "/api/star/dissect" },
 ];
 
 function eq(a: string, b: string): boolean {

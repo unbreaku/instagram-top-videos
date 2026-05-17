@@ -109,12 +109,20 @@ export default function Page() {
             las cuentas fijadas.
           </p>
         </div>
-        <Link
-          href="/accounts"
-          className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
-        >
-          Administrar cuentas →
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            href="/star"
+            className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100"
+          >
+            ⭐ Cuenta estrella
+          </Link>
+          <Link
+            href="/accounts"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+          >
+            Administrar cuentas →
+          </Link>
+        </div>
       </header>
 
       {loading && (
