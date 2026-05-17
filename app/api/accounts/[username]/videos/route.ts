@@ -106,9 +106,14 @@ export async function GET(req: Request, { params }: Params) {
         "shortcode, account_username, type, caption, posted_at, url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook, format_tags, analyzed_at",
       )
       .eq("account_username", username)
-      // nullsFirst: false → photos with NULL views fall to the bottom when
-      // sorting by views/likes/comments; otherwise they'd pollute the top.
-      .order(col, { ...order, nullsFirst: false })
+      // We previously passed nullsFirst:false to push photos with NULL views
+      // to the bottom. That option, combined with limit > ~450 on Supabase,
+      // silently dropped legitimate non-NULL rows at the top of the sort and
+      // returned the wrong slice. Stick to plain .order() and handle NULL
+      // ordering on the client (the table re-sorts via useMemo anyway).
+      .order(col, order)
+      // Secondary deterministic key avoids any further surprises with ties.
+      .order("shortcode", { ascending: true })
       .limit(limit),
     sb
       .from("account_snapshots")
