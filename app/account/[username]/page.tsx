@@ -133,7 +133,10 @@ export default function AccountPage({
   const [videos, setVideos] = useState<Video[]>([]);
   const [lifts, setLifts] = useState<DailyLift[]>([]);
   const [loading, setLoading] = useState(true);
-  const [sort, setSort] = useState<SortKey>("views");
+  // Default to most-recent first so when the user opens an account they see
+  // the new posts at the top (and notice today's data right away). They can
+  // still click any column header to re-sort.
+  const [sort, setSort] = useState<SortKey>("posted");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
