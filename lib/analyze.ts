@@ -8,10 +8,23 @@ import { refreshSingleVideo } from "./apify";
 import { transcribeUrl } from "./deepgram";
 import { getServerSupabase } from "./supabase";
 
+/**
+ * Sentinel value stored in `videos.transcript` when Deepgram successfully
+ * fetched the audio but found nothing to transcribe (silent video, only music,
+ * no detectable speech). Marking the row this way:
+ *
+ *   - Stops the drain from looping forever (transcript IS NOT NULL).
+ *   - Lets stats / UI categorize these as "sin audio" instead of "fallidos".
+ *   - Distinguishes from a real failure (kept in analyze_error).
+ *
+ * User-facing — keep the string stable since UI checks for equality.
+ */
+export const NO_AUDIO_SENTINEL = "[sin audio detectable]";
+
 export interface AnalyzeOneResult {
   shortcode: string;
   ok: boolean;
-  skipped?: "no_video_url" | "already_analyzed";
+  skipped?: "no_video_url" | "already_analyzed" | "no_audio";
   hook?: string;
   cta?: string;
   format_tags?: string[];
@@ -99,10 +112,17 @@ export async function analyzeOneVideo(
           throw e;
         }
       }
+      // If Deepgram succeeded but returned no detectable speech (silent video,
+      // music-only, etc.), store the sentinel so the drain doesn't keep
+      // retrying forever. The sentinel makes `transcript IS NOT NULL` true,
+      // taking the row out of the pending queue.
+      const cleaned = (transcript || "").trim();
+      const finalTranscript = cleaned || NO_AUDIO_SENTINEL;
+      transcript = finalTranscript;
       await sb
         .from("videos")
         .update({
-          transcript: transcript || null,
+          transcript: finalTranscript,
           transcript_lang: transcriptLang,
           transcribed_at: new Date().toISOString(),
         })
@@ -115,6 +135,28 @@ export async function analyzeOneVideo(
       .update({ analyze_error: `transcribe: ${msg.slice(0, 400)}` })
       .eq("shortcode", shortcode);
     return { shortcode, ok: false, error: msg, url_refreshed: urlRefreshed };
+  }
+
+  // Short-circuit: if the transcript is the no-audio sentinel, there's
+  // nothing for Anthropic to analyze. Mark the row as analyzed (so attempt
+  // tracking stops) with a single sentinel format_tag the UI can recognize.
+  if (transcript === NO_AUDIO_SENTINEL) {
+    await sb
+      .from("videos")
+      .update({
+        hook: null,
+        cta: null,
+        format_tags: ["sin_audio"],
+        analyzed_at: new Date().toISOString(),
+        analyze_error: null,
+      })
+      .eq("shortcode", shortcode);
+    return {
+      shortcode,
+      ok: true,
+      skipped: "no_audio",
+      url_refreshed: urlRefreshed,
+    };
   }
 
   let analysis;

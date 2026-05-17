@@ -25,11 +25,14 @@ const DEEPGRAM_USD_PER_MIN = 0.0058;
 const ANTHROPIC_USD_PER_VIDEO = 0.0025;
 const WINDOW_DAYS = 90;
 
+const NO_AUDIO_SENTINEL = "[sin audio detectable]";
+
 interface AccountStats {
   username: string;
   videos_total: number; // all posts in window
   videos_with_audio: number; // has video_url
-  transcripts_done: number; // has non-empty transcript
+  transcripts_done: number; // has a real (non-sentinel) transcript
+  transcripts_no_audio: number; // marked with the no-audio sentinel
   transcripts_pending: number; // no transcript + attempts<3 + has audio
   transcripts_failed: number; // no transcript + attempts>=3 + has audio
   estimated_minutes: number;
@@ -98,17 +101,16 @@ export async function GET() {
       const [
         videos_total,
         videos_with_audio,
-        transcripts_done,
+        transcripts_done_total, // includes both real transcripts AND no-audio sentinel
+        transcripts_no_audio,
         transcripts_pending,
         transcripts_failed,
         pendingMinutes,
       ] = await Promise.all([
         count(u, (q) => q),
         count(u, (q) => q.not("video_url", "is", null)),
-        // transcript is non-NULL. We treat empty-string as "not done" via the
-        // pending/failed counts below; drain self-heals empties to NULL so this
-        // converges quickly.
         count(u, (q) => q.not("transcript", "is", null).neq("transcript", "")),
+        count(u, (q) => q.eq("transcript", NO_AUDIO_SENTINEL)),
         count(u, (q) =>
           q
             .not("video_url", "is", null)
@@ -123,6 +125,10 @@ export async function GET() {
         ),
         sumPendingMinutes(u),
       ]);
+      // Subtract the sentinel rows from the "done" headline so it shows ONLY
+      // real transcripts. The sentinel rows are surfaced separately as
+      // transcripts_no_audio.
+      const transcripts_done = transcripts_done_total - transcripts_no_audio;
       const estimated_cost_usd = +(
         pendingMinutes * DEEPGRAM_USD_PER_MIN +
         transcripts_pending * ANTHROPIC_USD_PER_VIDEO
@@ -132,6 +138,7 @@ export async function GET() {
         videos_total,
         videos_with_audio,
         transcripts_done,
+        transcripts_no_audio,
         transcripts_pending,
         transcripts_failed,
         estimated_minutes: +pendingMinutes.toFixed(1),
@@ -146,6 +153,10 @@ export async function GET() {
     videos_total: stats.reduce((s, x) => s + x.videos_total, 0),
     videos_with_audio: stats.reduce((s, x) => s + x.videos_with_audio, 0),
     transcripts_done: stats.reduce((s, x) => s + x.transcripts_done, 0),
+    transcripts_no_audio: stats.reduce(
+      (s, x) => s + x.transcripts_no_audio,
+      0,
+    ),
     transcripts_pending: stats.reduce((s, x) => s + x.transcripts_pending, 0),
     transcripts_failed: stats.reduce((s, x) => s + x.transcripts_failed, 0),
     estimated_cost_usd: +stats

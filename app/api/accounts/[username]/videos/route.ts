@@ -16,6 +16,7 @@ interface VideoRow {
   caption: string | null;
   posted_at: string | null;
   url: string;
+  video_url: string | null;
   thumbnail_url: string | null;
   duration_seconds: number | null;
   latest_views: number | null;
@@ -27,6 +28,7 @@ interface VideoRow {
   hook: string | null;
   format_tags: string[] | null;
   analyzed_at: string | null;
+  analyze_attempts: number | null;
 }
 
 interface SnapshotRow {
@@ -114,7 +116,7 @@ export async function GET(req: Request, { params }: Params) {
     sb
       .from("videos")
       .select(
-        "shortcode, account_username, type, caption, posted_at, url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook, format_tags, analyzed_at",
+        "shortcode, account_username, type, caption, posted_at, url, video_url, thumbnail_url, duration_seconds, latest_views, latest_likes, latest_comments, latest_captured_at, transcript, cta, hook, format_tags, analyzed_at, analyze_attempts",
       )
       .eq("account_username", username)
       // We previously passed nullsFirst:false to push photos with NULL views

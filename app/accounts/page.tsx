@@ -89,6 +89,7 @@ export default function AccountsPage() {
       videos_total: number;
       videos_with_audio: number;
       transcripts_done: number;
+      transcripts_no_audio: number;
       transcripts_pending: number;
       transcripts_failed: number;
       estimated_cost_usd: number;
@@ -96,6 +97,7 @@ export default function AccountsPage() {
     accounts: Array<{
       username: string;
       transcripts_done: number;
+      transcripts_no_audio: number;
       transcripts_pending: number;
       transcripts_failed: number;
       estimated_minutes: number;
@@ -658,6 +660,14 @@ export default function AccountsPage() {
               <span className="text-emerald-700">
                 {transcriptStats.totals.transcripts_done} hechos
               </span>
+              {(transcriptStats.totals.transcripts_no_audio ?? 0) > 0 && (
+                <>
+                  {" · "}
+                  <span className="text-zinc-500">
+                    {transcriptStats.totals.transcripts_no_audio} sin audio 🔇
+                  </span>
+                </>
+              )}
               {" · "}
               <span className="text-amber-700">
                 {transcriptStats.totals.transcripts_pending} pendientes

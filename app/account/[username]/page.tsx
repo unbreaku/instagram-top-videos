@@ -30,6 +30,23 @@ interface Video {
   analyzed_at: string | null;
   transcript: string | null;
   estimated_followers: number | null;
+  analyze_attempts?: number | null;
+  video_url?: string | null;
+}
+
+const NO_AUDIO_SENTINEL = "[sin audio detectable]";
+
+// Returns the transcript status for a video. Used to render the badge in
+// the videos table and decide which actions to surface in the ••• menu.
+type TranscriptStatus = "done" | "no_audio" | "pending" | "failed" | "no_video";
+function transcriptStatus(v: Video): TranscriptStatus {
+  // Photos / sidecars don't have audio at all.
+  if (v.video_url === null) return "no_video";
+  if (v.transcript === NO_AUDIO_SENTINEL) return "no_audio";
+  if (v.transcript && v.transcript.length > 0) return "done";
+  const attempts = v.analyze_attempts ?? 0;
+  if (attempts >= 3) return "failed";
+  return "pending";
 }
 
 interface Snapshot {
@@ -145,6 +162,55 @@ export default function AccountPage({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Per-video ••• menu state. Only one menu open at a time (shortcode of
+  // the row whose menu is open, or null).
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  // Per-video "busy" flag while a force-transcript request is in flight.
+  const [busyShortcode, setBusyShortcode] = useState<string | null>(null);
+
+  // Close the menu when clicking outside.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDoc(e: MouseEvent) {
+      const t = e.target as HTMLElement;
+      if (!t.closest?.("[data-video-menu]")) setMenuOpen(null);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [menuOpen]);
+
+  async function forceTranscript(shortcode: string) {
+    setBusyShortcode(shortcode);
+    setMenuOpen(null);
+    try {
+      const r = await fetch(
+        `/api/videos/${encodeURIComponent(shortcode)}/force-transcript`,
+        { method: "POST" },
+      );
+      const j = await r.json();
+      if (j.ok) {
+        if (j.skipped === "no_audio") {
+          alert(
+            "Deepgram no detectó audio en este video. Marcado como 'sin audio detectable'.",
+          );
+        } else if (j.url_refreshed) {
+          alert(
+            "Transcript exitoso (la URL de Instagram había caducado, Apify trajo una nueva).",
+          );
+        } else {
+          alert("Transcript exitoso.");
+        }
+        // Refresh the page so the badge updates.
+        window.location.reload();
+      } else {
+        alert(`Falló: ${j.error || "error desconocido"}`);
+      }
+    } catch (e) {
+      alert(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyShortcode(null);
+    }
+  }
   const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
   // Format tags that appear in 2+ creators — strong template signal.
@@ -935,7 +1001,14 @@ export default function AccountPage({
                     align="right"
                   />
                   <th className="px-3 py-2">Análisis / Caption</th>
+                  <th
+                    className="px-3 py-2"
+                    title="Estado del transcript de cada video"
+                  >
+                    Transcript
+                  </th>
                   <th className="px-3 py-2">Link</th>
+                  <th className="px-3 py-2"></th>
                 </tr>
               </thead>
               <tbody>
@@ -1052,6 +1125,55 @@ Símbolos:
                           )}
                         </td>
                         <td className="px-3 py-2">
+                          {(() => {
+                            const status = transcriptStatus(v);
+                            const badge = {
+                              done: {
+                                emoji: "✅",
+                                label: "Hecho",
+                                cls: "bg-emerald-50 text-emerald-700",
+                                tooltip: "Transcript completado",
+                              },
+                              no_audio: {
+                                emoji: "🔇",
+                                label: "Sin audio",
+                                cls: "bg-zinc-100 text-zinc-500",
+                                tooltip:
+                                  "Deepgram no detectó habla. Video silente o solo música.",
+                              },
+                              pending: {
+                                emoji: "⏳",
+                                label: "Pendiente",
+                                cls: "bg-amber-50 text-amber-700",
+                                tooltip:
+                                  "Todavía no procesado. El próximo drenado lo va a intentar.",
+                              },
+                              failed: {
+                                emoji: "❌",
+                                label: "Fallido",
+                                cls: "bg-red-50 text-red-700",
+                                tooltip:
+                                  "Excedió los 3 intentos. Usá el menú ••• para forzar un retry con auto-refetch.",
+                              },
+                              no_video: {
+                                emoji: "📷",
+                                label: "Foto",
+                                cls: "bg-zinc-100 text-zinc-400",
+                                tooltip:
+                                  "Foto / sidecar sin audio. No requiere transcript.",
+                              },
+                            }[status];
+                            return (
+                              <span
+                                className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ${badge.cls}`}
+                                title={badge.tooltip}
+                              >
+                                {badge.emoji} {badge.label}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-3 py-2">
                           <a
                             href={v.url}
                             target="_blank"
@@ -1061,10 +1183,61 @@ Símbolos:
                             Ver
                           </a>
                         </td>
+                        <td className="relative px-3 py-2" data-video-menu>
+                          {v.video_url ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setMenuOpen(
+                                    menuOpen === v.shortcode
+                                      ? null
+                                      : v.shortcode,
+                                  )
+                                }
+                                disabled={busyShortcode === v.shortcode}
+                                className="rounded px-2 py-1 text-zinc-500 hover:bg-zinc-100 disabled:opacity-50"
+                                title="Acciones"
+                              >
+                                {busyShortcode === v.shortcode ? "…" : "•••"}
+                              </button>
+                              {menuOpen === v.shortcode && (
+                                <div className="absolute right-3 z-20 mt-1 w-56 rounded-md border border-zinc-200 bg-white shadow-lg">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (
+                                        confirm(
+                                          `Forzar re-transcripción de ${v.shortcode}.\n\nResetea attempts, intenta Deepgram (con auto-refetch de Apify si la URL caducó). Costo: ~$0.007-0.012.\n\n¿Continuar?`,
+                                        )
+                                      ) {
+                                        forceTranscript(v.shortcode);
+                                      }
+                                    }}
+                                    className="block w-full px-4 py-2 text-left text-sm text-zinc-700 hover:bg-zinc-50"
+                                  >
+                                    🔄 Forzar re-transcript
+                                  </button>
+                                  <a
+                                    href={v.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="block px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-50"
+                                    onClick={() => setMenuOpen(null)}
+                                  >
+                                    🔗 Abrir en Instagram
+                                  </a>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-zinc-300">—</span>
+                          )}
+                        </td>
                       </tr>
                       {isOpen && (
                         <tr className="bg-zinc-50">
-                          <td colSpan={9} className="px-3 py-4">
+                          <td colSpan={11} className="px-3 py-4">
                             <div className="space-y-3 text-sm">
                               {v.hook && (
                                 <Block label="Hook">{v.hook}</Block>
@@ -1076,7 +1249,14 @@ Símbolos:
                                 <Block label="Caption original">{v.caption}</Block>
                               )}
                               <Block label="Transcript">
-                                {v.transcript ? (
+                                {v.transcript === NO_AUDIO_SENTINEL ? (
+                                  <span className="text-zinc-500">
+                                    🔇 Sin audio detectable. Deepgram procesó
+                                    el video pero no encontró habla (silente o
+                                    solo música). Para reintentar, usá el menú
+                                    ••• → Forzar re-transcript.
+                                  </span>
+                                ) : v.transcript ? (
                                   <span className="whitespace-pre-wrap">
                                     {v.transcript}
                                   </span>
@@ -1084,7 +1264,7 @@ Símbolos:
                                   <span className="text-zinc-400">
                                     Sin transcript. {v.analyzed_at
                                       ? "(El video probablemente no tiene audio detectable o el URL de Apify expiró antes de la transcripción.)"
-                                      : "Dale 'Analizar pendientes' para procesarlo."}
+                                      : "El próximo drenado lo va a procesar — o usá el menú ••• para forzarlo ahora."}
                                   </span>
                                 )}
                               </Block>
