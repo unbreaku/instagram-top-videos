@@ -104,10 +104,17 @@ export async function POST(req: Request) {
   // transcript came back empty/null (e.g. Deepgram returned 200 with empty
   // body, then Anthropic still ran on the empty transcript and we set
   // analyzed_at). Those zombies have transcript=null forever.
+  //
+  // We use .or() to catch BOTH transcript IS NULL and transcript = '' because
+  // stats counts empty strings as "pending" (via !!transcript), and we don't
+  // want to leave behind rows that the user sees as pending but drain can't
+  // process. Migration 0010_normalize_empty_transcripts cleans up the
+  // historical empty rows; this filter is defense-in-depth in case any new
+  // row slips through with an empty string.
   let q = sb
     .from("videos")
     .select("shortcode, account_username")
-    .is("transcript", null)
+    .or("transcript.is.null,transcript.eq.")
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff)
@@ -156,7 +163,7 @@ export async function POST(req: Request) {
   let remainingQ = sb
     .from("videos")
     .select("shortcode", { count: "exact", head: true })
-    .is("transcript", null)
+    .or("transcript.is.null,transcript.eq.")
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff);

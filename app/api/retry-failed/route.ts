@@ -30,7 +30,7 @@ export async function POST() {
     .from("videos")
     .update({ analyze_attempts: 0, analyze_error: null })
     .gte("analyze_attempts", 3)
-    .is("transcript", null)
+    .or("transcript.is.null,transcript.eq.")
     .not("video_url", "is", null)
     .gte("posted_at", windowCutoff)
     .select("shortcode");
