@@ -102,7 +102,8 @@ export default function AccountsPage() {
       estimated_cost_usd: number;
     }>;
     drain: {
-      recent_analyses_2min: number;
+      recent_analyses_window_min: number;
+      recent_analyses: number;
       last_analyzed_at: string | null;
       is_active: boolean;
     };
@@ -676,8 +677,8 @@ export default function AccountsPage() {
                   <div className="flex-1 text-sm text-emerald-900">
                     <strong>Drenando en background…</strong>{" "}
                     <span className="text-emerald-700">
-                      {transcriptStats.drain.recent_analyses_2min} videos
-                      analizados en últimos 2 min ·{" "}
+                      {transcriptStats.drain.recent_analyses} videos analizados
+                      en últimos {transcriptStats.drain.recent_analyses_window_min} min ·{" "}
                       {transcriptStats.totals.transcripts_pending} pendientes
                     </span>
                     <div className="mt-1 text-xs text-emerald-700">

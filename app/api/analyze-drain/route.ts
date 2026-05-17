@@ -27,7 +27,16 @@ export const maxDuration = 60;
  *                          finishes in ~30 batches → ~3-5 min wall-clock).
  *   ?_depth=<n>           Internal: current chain depth. Not user-facing.
  */
-const BATCH_PER_CALL = 10;
+// We grab a big slice of videos and process them in parallel waves. Per-video
+// budget is ~5-15s (Deepgram + Anthropic), so serially we'd fit ~10 in the
+// 60s function timeout. With CONCURRENCY=5 parallel calls per wave, we fit
+// ~40-50 per call instead. Higher concurrency risks hitting Anthropic /
+// Deepgram per-tenant rate limits.
+const FETCH_PER_CALL = 50;
+const CONCURRENCY = 5;
+// Stop launching new work after this elapsed time so we have headroom to
+// dispatch the chain before Vercel kills us at 60s.
+const SOFT_DEADLINE_MS = 45_000;
 const WINDOW_DAYS = 90;
 
 function isAuthorized(req: Request): boolean {
@@ -65,12 +74,14 @@ export async function POST(req: Request) {
   ).toISOString();
 
   // Prevent the user from kicking off a parallel chain by reloading and
-  // clicking again. If any video has been analyzed in the last 2 minutes,
+  // clicking again. If any video has been analyzed in the last 5 minutes,
   // there's almost certainly an active chain in flight — refuse user-initiated
   // calls (depth=0) and let the existing chain finish. Internal self-chained
   // calls (depth>0) always pass because they ARE the active chain.
+  // (Window bumped 2 → 5 min after seeing the UI flip back to the button
+  //  prematurely on slow batches.)
   if (depth === 0) {
-    const recentCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const recentCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const { count: recentCount } = await sb
       .from("videos")
       .select("shortcode", { count: "exact", head: true })
@@ -100,32 +111,43 @@ export async function POST(req: Request) {
     .gte("posted_at", windowCutoff)
     .order("latest_views", { ascending: false })
     .order("shortcode", { ascending: true })
-    .limit(BATCH_PER_CALL);
+    .limit(FETCH_PER_CALL);
   if (account) q = q.eq("account_username", account);
 
   const { data: candidates, error } = await q;
   if (error)
     return NextResponse.json({ error: error.message }, { status: 500 });
 
+  // Process candidates in parallel waves of CONCURRENCY. This is the main
+  // throughput lever — sequential ~10/min becomes ~50/min, so a 357-video
+  // backlog drains in ~7 min wall-clock instead of ~35.
   const results: Array<{
     shortcode: string;
     account: string;
     ok: boolean;
     error?: string;
+    skipped?: string;
   }> = [];
-  for (const c of candidates || []) {
-    // Pass force:true so videos that previously had analyzed_at set with
-    // null transcript (Deepgram empty response zombies) get a fresh try.
-    // analyzeOneVideo only re-calls Deepgram when transcript is null, so
-    // force doesn't waste money on videos that already have one.
-    const r = await analyzeOneVideo(c.shortcode, { force: true });
-    results.push({
-      shortcode: c.shortcode,
-      account: c.account_username,
-      ok: r.ok,
-      error: r.error,
-      skipped: r.skipped,
-    });
+  const startMs = Date.now();
+  const queue = [...(candidates || [])];
+  while (queue.length > 0 && Date.now() - startMs < SOFT_DEADLINE_MS) {
+    const wave = queue.splice(0, CONCURRENCY);
+    const waveResults = await Promise.all(
+      wave.map(async (c) => {
+        // force:true so zombies (analyzed_at set, transcript null) get
+        // retried. analyzeOneVideo only re-calls Deepgram when transcript is
+        // null, so this doesn't double-charge videos that already have one.
+        const r = await analyzeOneVideo(c.shortcode, { force: true });
+        return {
+          shortcode: c.shortcode,
+          account: c.account_username,
+          ok: r.ok,
+          error: r.error,
+          skipped: r.skipped,
+        };
+      }),
+    );
+    results.push(...waveResults);
   }
 
   // Count what's left after this batch.
@@ -140,8 +162,12 @@ export async function POST(req: Request) {
   const { count: remaining } = await remainingQ;
 
   // Chain a self-invocation if there's more work and we haven't bumped the
-  // safety cap. Fire-and-forget so this response returns immediately.
+  // safety cap. We await the *kickoff* briefly (just enough to establish
+  // the next HTTP connection) instead of pure fire-and-forget, because
+  // Vercel sometimes kills outgoing fetches when the response returns.
+  // The next function instance runs independently afterwards.
   let chained = false;
+  let chainError: string | null = null;
   if ((remaining ?? 0) > 0 && depth + 1 < maxChain) {
     const proto = req.headers.get("x-forwarded-proto") || "https";
     const host = req.headers.get("host");
@@ -150,14 +176,31 @@ export async function POST(req: Request) {
       if (account) nextUrl.searchParams.set("account", account);
       nextUrl.searchParams.set("max_chain", String(maxChain));
       nextUrl.searchParams.set("_depth", String(depth + 1));
-      // No await — let the runtime tear down this invocation while the new
-      // one boots. Vercel keeps the outgoing fetch alive long enough to
-      // establish the next function instance.
-      fetch(nextUrl.toString(), {
-        method: "POST",
-        headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
-      }).catch(() => {});
-      chained = true;
+      // AbortController limits the wait to ~3s; we just need the connection
+      // accepted (the new invocation runs to completion independently).
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      try {
+        await fetch(nextUrl.toString(), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
+          signal: ctrl.signal,
+        });
+        chained = true;
+      } catch (e) {
+        // AbortError is expected when the 3s timeout hits — by then Vercel
+        // has accepted the request and the next function is running.
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("aborted") || msg.includes("AbortError")) {
+          chained = true;
+        } else {
+          chainError = msg;
+        }
+      } finally {
+        clearTimeout(t);
+      }
+    } else {
+      chainError = "CRON_SECRET env var no configurada — chain no puede continuar";
     }
   }
 
@@ -165,8 +208,10 @@ export async function POST(req: Request) {
     processed: results.length,
     remaining: remaining ?? null,
     chained,
+    chain_error: chainError,
     depth,
     account: account || null,
+    elapsed_ms: Date.now() - startMs,
     results,
   });
 }
