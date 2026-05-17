@@ -400,9 +400,19 @@ export default function AccountPage({
 
       {lifts.length > 1 && (
         <section className="mb-10">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
-            Crecimiento diario · videos atribuibles
-          </h2>
+          <details className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+            <summary className="cursor-pointer p-4 text-sm font-semibold uppercase tracking-wide text-zinc-500 hover:bg-zinc-50">
+              Crecimiento diario · videos atribuibles ({lifts.length} días)
+              <span className="ml-2 text-[10px] font-normal normal-case text-zinc-400">
+                Click para expandir/cerrar
+              </span>
+            </summary>
+            <div className="border-t border-zinc-100 p-2">
+              <p className="mb-2 px-2 text-xs text-zinc-500">
+                Cada fila = un día del cron. Muestra cuántos followers ganó (o
+                perdió) la cuenta y qué posts se publicaron en esa ventana —
+                pista de cuál fue responsable del lift.
+              </p>
           <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm">
             <table className="w-full border-collapse text-sm">
               <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
@@ -474,6 +484,8 @@ export default function AccountPage({
               </tbody>
             </table>
           </div>
+            </div>
+          </details>
         </section>
       )}
 
@@ -1066,29 +1078,72 @@ function Stats90d({
     <section className="mb-10 grid gap-6 lg:grid-cols-3">
       {chartData.length > 1 ? (
         <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm lg:col-span-2">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
-            Crecimiento de followers
-          </h2>
+          <div className="mb-3 flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
+              Crecimiento de followers
+            </h2>
+            {(() => {
+              const first = chartData[0].followers || 0;
+              const last = chartData[chartData.length - 1].followers || 0;
+              const delta = last - first;
+              return (
+                <div className="text-right text-xs">
+                  <div className="text-zinc-500">
+                    {fmt(first)} → <strong className="text-zinc-900">{fmt(last)}</strong>
+                  </div>
+                  <div
+                    className={
+                      delta > 0
+                        ? "text-emerald-700"
+                        : delta < 0
+                          ? "text-red-700"
+                          : "text-zinc-500"
+                    }
+                  >
+                    {delta > 0 ? "+" : ""}
+                    {fmt(delta)} en {chartData.length} días
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid stroke="#f1f5f9" />
-                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} width={70} />
-                <Tooltip />
+              <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  width={56}
+                  // Auto-zoom to the data range with a small margin so daily
+                  // changes of ±200 over a 700k baseline are actually visible
+                  // (the default 0-base scale made the line look flat).
+                  domain={[
+                    (dataMin: number) => Math.floor(dataMin * 0.999),
+                    (dataMax: number) => Math.ceil(dataMax * 1.001),
+                  ]}
+                  tickFormatter={(v) =>
+                    new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v as number)
+                  }
+                />
+                <Tooltip
+                  formatter={(v: number) => [fmt(v), "Followers"]}
+                  labelClassName="text-xs"
+                />
                 <Line
                   type="monotone"
                   dataKey="followers"
-                  stroke="#18181b"
-                  strokeWidth={2}
-                  dot={false}
+                  stroke="#0ea5e9"
+                  strokeWidth={2.5}
+                  dot={{ r: 4, fill: "#0ea5e9", strokeWidth: 0 }}
+                  activeDot={{ r: 6 }}
                 />
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <p className="mt-2 text-xs text-zinc-500">
-            Cada punto = snapshot del cron diario. Mañana ya tendrás más
-            puntos.
+          <p className="mt-2 text-[11px] text-zinc-500">
+            Cada punto = snapshot del cron diario. El eje Y está auto-zooomeado
+            al rango de tu cuenta para que veas variaciones chicas.
           </p>
         </div>
       ) : (
