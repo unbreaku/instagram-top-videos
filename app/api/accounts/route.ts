@@ -11,9 +11,14 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const includeDeleted = searchParams.get("include_deleted") === "1";
 
+  // Star account first (account_role='star' ranks above 'guide' and NULL
+   // because we map 'star' to a sort key elsewhere on the client; for now we
+   // just sort star by putting account_role asc so 'star' comes before NULL).
+  // Then pinned accounts, then alphabetical.
   let q = sb
     .from("accounts")
     .select("*")
+    .order("account_role", { ascending: true, nullsFirst: false })
     .order("is_pinned", { ascending: false })
     .order("username", { ascending: true });
   if (!includeDeleted) q = q.is("deleted_at", null);

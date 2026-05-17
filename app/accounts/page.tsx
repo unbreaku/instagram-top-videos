@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 interface Account {
   username: string;
   is_pinned: boolean;
+  account_role?: "star" | "guide" | null;
   video_count: number;
   posts_count: number | null;
   posts_in_db: number;
@@ -312,6 +313,43 @@ export default function AccountsPage() {
     refresh();
   }
 
+  async function setStar(u: string, makeStar: boolean) {
+    setOpenMenu(null);
+    if (
+      makeStar &&
+      !confirm(
+        `Marcar @${u} como cuenta ESTRELLA.\n\nEsto va a:\n• Demoter cualquier estrella anterior a 'guide'\n• Disparar un scrape histórico completo (~600-999 posts, ~$1-2 de Apify)\n• Transcribir todo el corpus para la disección de DNA\n\n¿Continuar?`,
+      )
+    )
+      return;
+    setBusyAction(`star-${u}`);
+    setMsg(makeStar ? `Marcando @${u} como estrella…` : `Demotando @${u}…`);
+    try {
+      const res = await fetch(`/api/accounts/${u}/role`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: makeStar ? "star" : "guide" }),
+      });
+      const j = await res.json();
+      if (!res.ok) {
+        setMsg(`Error: ${j.error || res.status}`);
+      } else if (makeStar) {
+        const demoted = j.demoted ? ` (demotó a @${j.demoted})` : "";
+        const scraping = j.scrape_run_id
+          ? ` · scrape histórico arrancando (run ${j.scrape_run_id.slice(0, 8)})`
+          : "";
+        setMsg(`@${u} es la cuenta estrella${demoted}${scraping}`);
+      } else {
+        setMsg(`@${u} ya no es estrella`);
+      }
+      refresh();
+    } catch (e) {
+      setMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function refreshRecent(u: string) {
     setOpenMenu(null);
     setBusyAction(`refresh-${u}`);
@@ -531,6 +569,14 @@ export default function AccountsPage() {
             <div className="flex-1">
               <div className="flex items-center gap-2">
                 <span className="font-medium">@{a.username}</span>
+                {a.account_role === "star" && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900"
+                    title="Cuenta estrella — la cuenta cuyo crecimiento queremos engineering. Recibe disección completa + comparativas vs guides."
+                  >
+                    ⭐ Estrella
+                  </span>
+                )}
                 {a.status?.scrape_active && (
                   <span
                     className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-800"
@@ -599,6 +645,20 @@ export default function AccountsPage() {
                   onClick={(e) => e.stopPropagation()}
                   className="absolute right-0 z-10 mt-1 w-64 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg"
                 >
+                  <button
+                    onClick={() => setStar(a.username, a.account_role !== "star")}
+                    disabled={busyAction === `star-${a.username}`}
+                    className={`block w-full px-4 py-2 text-left text-sm hover:bg-zinc-50 disabled:opacity-50 ${
+                      a.account_role === "star"
+                        ? "text-zinc-700"
+                        : "text-amber-700 font-semibold"
+                    }`}
+                  >
+                    {a.account_role === "star"
+                      ? "↓ Desmarcar como estrella"
+                      : "⭐ Marcar como cuenta estrella"}
+                  </button>
+                  <div className="border-t border-zinc-100" />
                   <button
                     onClick={() => refreshRecent(a.username)}
                     className="block w-full px-4 py-2 text-left text-sm hover:bg-zinc-50"

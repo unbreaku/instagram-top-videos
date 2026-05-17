@@ -77,6 +77,24 @@ export async function POST(req: Request) {
     Date.now() - WINDOW_DAYS * 86400 * 1000,
   ).toISOString();
 
+  // STAR ACCOUNT BYPASS: the star account (Pablo Casasa, or whoever the
+  // `accounts.account_role = 'star'` row points to) gets the full historical
+  // corpus transcribed, not just the trailing 90 days. We resolve the star
+  // up-front and use a per-call "effective cutoff" that is way in the past
+  // for the star and the normal 90d window for everyone else.
+  const { data: starRow } = await sb
+    .from("accounts")
+    .select("username")
+    .eq("account_role", "star")
+    .maybeSingle();
+  const starUsername = starRow?.username ?? null;
+  // "Forever ago" — practical lower bound for the star account.
+  const STAR_CUTOFF = "2000-01-01T00:00:00.000Z";
+  function cutoffFor(acc: string | null): string {
+    if (acc && starUsername && acc === starUsername) return STAR_CUTOFF;
+    return windowCutoff;
+  }
+
   // Prevent the user from kicking off a parallel chain by reloading and
   // clicking again. If any video has been analyzed in the last 5 minutes,
   // there's almost certainly an active chain in flight — refuse user-initiated
@@ -148,11 +166,16 @@ export async function POST(req: Request) {
   // historically-NULL and historically-empty videos. We avoid PostgREST's
   // .or("transcript.eq.") because that syntax matched almost nothing in
   // practice (silent filter failure).
+  // If a specific account is targeted, use its cutoff (star gets full
+  // history, guides get 90d). For the global drain (no account filter),
+  // use the standard 90d window so we don't accidentally pull all-time
+  // history for the star while also serving guides in the same call.
+  const effectiveCutoff = cutoffFor(account);
   let q = sb
     .from("videos")
     .select("shortcode, account_username")
     .not("video_url", "is", null)
-    .gte("posted_at", windowCutoff)
+    .gte("posted_at", effectiveCutoff)
     .is("transcript", null);
   if (!panic) {
     q = q.lt("analyze_attempts", 3);
@@ -206,7 +229,7 @@ export async function POST(req: Request) {
     .is("transcript", null)
     .lt("analyze_attempts", 3)
     .not("video_url", "is", null)
-    .gte("posted_at", windowCutoff);
+    .gte("posted_at", effectiveCutoff);
   if (account) remainingQ = remainingQ.eq("account_username", account);
   const { count: remaining } = await remainingQ;
 
