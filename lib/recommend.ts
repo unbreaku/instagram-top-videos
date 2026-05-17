@@ -29,7 +29,11 @@ interface ScorableVideo {
   latest_views: number | null;
   latest_likes: number | null;
   latest_comments: number | null;
-  transcript: string | null;
+  // Made optional: callers no longer always pass the transcript text (bulk
+  // /videos endpoint stripped it to avoid response-size truncation bugs).
+  // The scorer only reads !!transcript for the reproducibility heuristic,
+  // so undefined / null / "" all behave the same.
+  transcript?: string | null;
   hook: string | null;
   cta: string | null;
   format_tags: string[] | null;
