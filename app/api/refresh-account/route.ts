@@ -39,6 +39,27 @@ export async function POST(req: Request) {
   try {
     const items = await runSync(username, limit, true);
     const r = await ingestApifyItems(username, items);
+
+    // Kick off the analyze drain for THIS account in the background. Brand-new
+    // videos from this refresh land in the DB with analyzed_at=null and would
+    // otherwise wait for tomorrow's cron. Fire-and-forget so the user's
+    // refresh button returns immediately.
+    try {
+      const proto = req.headers.get("x-forwarded-proto") || "https";
+      const host = req.headers.get("host");
+      if (host && process.env.CRON_SECRET) {
+        const drainUrl = new URL(
+          `${proto}://${host}/api/analyze-drain?account=${encodeURIComponent(username)}`,
+        );
+        fetch(drainUrl.toString(), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
+        }).catch(() => {});
+      }
+    } catch {
+      // Drain trigger is best-effort — never let it break the refresh response.
+    }
+
     return NextResponse.json({ ok: true, ...r });
   } catch (e) {
     return NextResponse.json(

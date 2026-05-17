@@ -634,11 +634,55 @@ export default function AccountsPage() {
             </summary>
             <div className="mt-4 space-y-3">
               <p className="rounded-md bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-600">
-                Política propuesta: <strong>todos los videos de los últimos
+                Política activa: <strong>todos los videos de los últimos
                 90 días, sin filtro de vistas mínimo</strong>. Los transcripts
                 existentes no se vuelven a procesar (se leen de la BD).
                 Costo = Deepgram $0.0058/min + Claude Haiku $0.0025/video.
               </p>
+              {transcriptStats.totals.transcripts_pending > 0 && (
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={async () => {
+                      setBusyAction("drain");
+                      setMsg(
+                        `Iniciando drenaje en background (${transcriptStats.totals.transcripts_pending} pendientes, ~$${transcriptStats.totals.estimated_cost_usd.toFixed(2)}). Podés cerrar el browser — sigue corriendo en Vercel.`,
+                      );
+                      try {
+                        const r = await fetch("/api/analyze-drain", {
+                          method: "POST",
+                        });
+                        const j = await r.json();
+                        if (r.ok) {
+                          setMsg(
+                            `Drenaje arrancó. Lote inicial: ${j.processed} videos procesados, ${j.remaining ?? "?"} en cola. La cadena de auto-invocaciones sigue en background — recargá esta página en unos minutos para ver el progreso.`,
+                          );
+                          loadTranscriptStats();
+                        } else {
+                          setMsg(`Error: ${j.error || "desconocido"}`);
+                        }
+                      } catch (e) {
+                        setMsg(
+                          `Error: ${e instanceof Error ? e.message : String(e)}`,
+                        );
+                      } finally {
+                        setBusyAction(null);
+                      }
+                    }}
+                    disabled={busyAction === "drain"}
+                    className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+                  >
+                    {busyAction === "drain"
+                      ? "Arrancando…"
+                      : `Drenar ${transcriptStats.totals.transcripts_pending} pendientes ahora`}
+                  </button>
+                  <button
+                    onClick={loadTranscriptStats}
+                    className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-50"
+                  >
+                    Refrescar conteos
+                  </button>
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">

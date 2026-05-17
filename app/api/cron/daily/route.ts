@@ -83,6 +83,27 @@ export async function GET(req: Request) {
         added: r.videosAdded,
         updated: r.videosUpdated,
       });
+      // Trigger a backlog drain for this account (fire-and-forget). This is
+      // belt-and-suspenders: the inline analyze loop below will also pick up
+      // unanalyzed videos, but the drain keeps running across multiple
+      // function invocations until the whole 90d window is transcribed, which
+      // is what the user asked for ("que cada día corra siempre los
+      // transcripts" — not just 10 per cron run).
+      try {
+        const proto = req.headers.get("x-forwarded-proto") || "https";
+        const host = req.headers.get("host");
+        if (host && process.env.CRON_SECRET) {
+          const drainUrl = new URL(
+            `${proto}://${host}/api/analyze-drain?account=${encodeURIComponent(username)}`,
+          );
+          fetch(drainUrl.toString(), {
+            method: "POST",
+            headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
+          }).catch(() => {});
+        }
+      } catch {
+        // best-effort
+      }
     } catch (e) {
       results.push({
         username,

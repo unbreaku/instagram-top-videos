@@ -59,6 +59,10 @@ export function middleware(req: NextRequest) {
 
   // Cron route is auth'd separately via CRON_SECRET — let it pass through here.
   if (path.startsWith("/api/cron/")) return NextResponse.next();
+  // Analyze-drain handles its own dual-mode auth (cookie OR cron bearer) so
+  // its internal self-chained POSTs (which carry the bearer, not the cookie)
+  // can pass through.
+  if (path.startsWith("/api/analyze-drain")) return NextResponse.next();
 
   // Page protection.
   if (PROTECTED_PAGES.some((p) => path === p || path.startsWith(p + "/"))) {

@@ -25,7 +25,7 @@ const STUCK_RUNNING_THRESHOLD_MS = 4 * 60 * 1000;
  * dataset fetch directly. If items are present, we ingest and finalize the
  * row. This avoids manual recovery when Apify's status read is stale.
  */
-export async function GET(_req: Request, { params }: Params) {
+export async function GET(req: Request, { params }: Params) {
   const sb = getServerSupabase();
   const { runId } = params;
 
@@ -81,6 +81,24 @@ export async function GET(_req: Request, { params }: Params) {
           videos_updated: ingest.videosUpdated,
         })
         .eq("run_id", runId);
+      // Kick the analyze drain for this account so the newly-ingested videos
+      // get transcribed immediately, not waiting for tomorrow's cron.
+      try {
+        const proto = req.headers.get("x-forwarded-proto") || "https";
+        const host = req.headers.get("host");
+        const acct = row.account_username || "";
+        if (host && acct && process.env.CRON_SECRET) {
+          const drainUrl = new URL(
+            `${proto}://${host}/api/analyze-drain?account=${encodeURIComponent(acct)}`,
+          );
+          fetch(drainUrl.toString(), {
+            method: "POST",
+            headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
+          }).catch(() => {});
+        }
+      } catch {
+        // best-effort
+      }
       return NextResponse.json({
         status: "SUCCEEDED",
         videos_added: ingest.videosAdded,
