@@ -117,6 +117,12 @@ export default function Page() {
             ⭐ Cuenta estrella
           </Link>
           <Link
+            href="/recipes"
+            className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+          >
+            🧪 Recetas
+          </Link>
+          <Link
             href="/accounts"
             className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
           >

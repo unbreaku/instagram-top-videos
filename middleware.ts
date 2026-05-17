@@ -40,6 +40,8 @@ const PROTECTED_API: ApiRule[] = [
   { method: "POST", pathPrefix: "/api/retry-failed" },
   // Star dissection burns ~$1 of Sonnet per call → owner-only.
   { method: "POST", pathPrefix: "/api/star/dissect" },
+  // Recipes engine also burns ~$1 of Sonnet per generation.
+  { method: "POST", pathPrefix: "/api/recipes" },
 ];
 
 function eq(a: string, b: string): boolean {
