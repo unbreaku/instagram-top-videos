@@ -64,6 +64,27 @@ export async function POST(req: Request) {
     Date.now() - WINDOW_DAYS * 86400 * 1000,
   ).toISOString();
 
+  // Prevent the user from kicking off a parallel chain by reloading and
+  // clicking again. If any video has been analyzed in the last 2 minutes,
+  // there's almost certainly an active chain in flight — refuse user-initiated
+  // calls (depth=0) and let the existing chain finish. Internal self-chained
+  // calls (depth>0) always pass because they ARE the active chain.
+  if (depth === 0) {
+    const recentCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const { count: recentCount } = await sb
+      .from("videos")
+      .select("shortcode", { count: "exact", head: true })
+      .gte("analyzed_at", recentCutoff);
+    if ((recentCount ?? 0) > 0) {
+      return NextResponse.json({
+        already_running: true,
+        recent_analyses_2min: recentCount,
+        message:
+          "Ya hay un drenado en curso. Esperá unos minutos y revisá los conteos.",
+      });
+    }
+  }
+
   // Same gating rules as the cron + analyze-pending so all three agree on
   // what counts as "still to do".
   let q = sb

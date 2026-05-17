@@ -101,6 +101,11 @@ export default function AccountsPage() {
       estimated_minutes: number;
       estimated_cost_usd: number;
     }>;
+    drain: {
+      recent_analyses_2min: number;
+      last_analyzed_at: string | null;
+      is_active: boolean;
+    };
   } | null>(null);
 
   async function refresh() {
@@ -137,6 +142,14 @@ export default function AccountsPage() {
     const id = setInterval(refresh, 15_000);
     return () => clearInterval(id);
   }, [accounts]);
+
+  // Auto-poll the transcript stats while the drain chain is active, so the
+  // user sees pending counts ticking down without manual reloads.
+  useEffect(() => {
+    if (!transcriptStats?.drain?.is_active) return;
+    const id = setInterval(loadTranscriptStats, 8_000);
+    return () => clearInterval(id);
+  }, [transcriptStats?.drain?.is_active]);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -639,49 +652,81 @@ export default function AccountsPage() {
                 existentes no se vuelven a procesar (se leen de la BD).
                 Costo = Deepgram $0.0058/min + Claude Haiku $0.0025/video.
               </p>
-              {transcriptStats.totals.transcripts_pending > 0 && (
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={async () => {
-                      setBusyAction("drain");
-                      setMsg(
-                        `Iniciando drenaje en background (${transcriptStats.totals.transcripts_pending} pendientes, ~$${transcriptStats.totals.estimated_cost_usd.toFixed(2)}). Podés cerrar el browser — sigue corriendo en Vercel.`,
-                      );
-                      try {
-                        const r = await fetch("/api/analyze-drain", {
-                          method: "POST",
-                        });
-                        const j = await r.json();
-                        if (r.ok) {
-                          setMsg(
-                            `Drenaje arrancó. Lote inicial: ${j.processed} videos procesados, ${j.remaining ?? "?"} en cola. La cadena de auto-invocaciones sigue en background — recargá esta página en unos minutos para ver el progreso.`,
-                          );
-                          loadTranscriptStats();
-                        } else {
-                          setMsg(`Error: ${j.error || "desconocido"}`);
-                        }
-                      } catch (e) {
-                        setMsg(
-                          `Error: ${e instanceof Error ? e.message : String(e)}`,
-                        );
-                      } finally {
-                        setBusyAction(null);
-                      }
-                    }}
-                    disabled={busyAction === "drain"}
-                    className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
-                  >
-                    {busyAction === "drain"
-                      ? "Arrancando…"
-                      : `Drenar ${transcriptStats.totals.transcripts_pending} pendientes ahora`}
-                  </button>
-                  <button
-                    onClick={loadTranscriptStats}
-                    className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-50"
-                  >
-                    Refrescar conteos
-                  </button>
+              {transcriptStats.drain?.is_active ? (
+                <div className="flex items-center gap-3 rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+                  <div className="flex-1 text-sm text-emerald-900">
+                    <strong>Drenando en background…</strong>{" "}
+                    <span className="text-emerald-700">
+                      {transcriptStats.drain.recent_analyses_2min} videos
+                      analizados en últimos 2 min ·{" "}
+                      {transcriptStats.totals.transcripts_pending} pendientes
+                    </span>
+                    <div className="mt-1 text-xs text-emerald-700">
+                      Refrescando cada 8s. Podés cerrar esta pestaña — la
+                      cadena sigue corriendo en Vercel hasta terminar.
+                      {transcriptStats.drain.last_analyzed_at && (
+                        <>
+                          {" · Último: "}
+                          {new Date(
+                            transcriptStats.drain.last_analyzed_at,
+                          ).toLocaleTimeString("es-ES", {
+                            timeZone: "Europe/Madrid",
+                          })}
+                        </>
+                      )}
+                    </div>
+                  </div>
                 </div>
+              ) : (
+                transcriptStats.totals.transcripts_pending > 0 && (
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={async () => {
+                        setBusyAction("drain");
+                        setMsg(
+                          `Iniciando drenaje (${transcriptStats.totals.transcripts_pending} pendientes, ~$${transcriptStats.totals.estimated_cost_usd.toFixed(2)})…`,
+                        );
+                        try {
+                          const r = await fetch("/api/analyze-drain", {
+                            method: "POST",
+                          });
+                          const j = await r.json();
+                          if (j.already_running) {
+                            setMsg(
+                              "Ya hay un drenado en curso. El indicador verde aparecerá en ~30s y la página se va a auto-refrescar.",
+                            );
+                          } else if (r.ok) {
+                            setMsg(
+                              `Drenado arrancado. Lote inicial: ${j.processed} videos. La cadena sigue en background — esta página se va a auto-refrescar cada 8s.`,
+                            );
+                          } else {
+                            setMsg(`Error: ${j.error || "desconocido"}`);
+                          }
+                          loadTranscriptStats();
+                        } catch (e) {
+                          setMsg(
+                            `Error: ${e instanceof Error ? e.message : String(e)}`,
+                          );
+                        } finally {
+                          setBusyAction(null);
+                        }
+                      }}
+                      disabled={busyAction === "drain"}
+                      className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      {busyAction === "drain"
+                        ? "Arrancando…"
+                        : `Drenar ${transcriptStats.totals.transcripts_pending} pendientes ahora`}
+                    </button>
+                    <button
+                      onClick={loadTranscriptStats}
+                      className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-50"
+                    >
+                      Refrescar conteos
+                    </button>
+                  </div>
+                )
               )}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

@@ -144,6 +144,23 @@ export async function GET() {
       .toFixed(2),
   };
 
+  // Heartbeat: if any video was analyzed in the last 2 minutes, the drain
+  // chain is almost certainly still running. The UI uses this to render a
+  // "drenando..." indicator instead of the button, so a page reload doesn't
+  // tempt the user into clicking again and spawning a parallel chain.
+  const recentCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  const { count: recentAnalyses } = await sb
+    .from("videos")
+    .select("shortcode", { count: "exact", head: true })
+    .gte("analyzed_at", recentCutoff);
+  const { data: lastRow } = await sb
+    .from("videos")
+    .select("analyzed_at")
+    .not("analyzed_at", "is", null)
+    .order("analyzed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   return NextResponse.json({
     policy: {
       window_days: WINDOW_DAYS,
@@ -154,5 +171,10 @@ export async function GET() {
     },
     totals,
     accounts: stats,
+    drain: {
+      recent_analyses_2min: recentAnalyses ?? 0,
+      last_analyzed_at: lastRow?.analyzed_at ?? null,
+      is_active: (recentAnalyses ?? 0) > 0,
+    },
   });
 }
