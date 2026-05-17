@@ -14,7 +14,8 @@ export const maxDuration = 60;
  * Only works while there is exactly one account with account_role='star'.
  */
 
-async function getStar(sb: ReturnType<typeof getServerSupabase>) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getStar(sb: any) {
   const { data } = await sb
     .from("accounts")
     .select("username, display_name, profile_pic_url, star_dissection")

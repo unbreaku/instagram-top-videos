@@ -19,7 +19,8 @@ const GUIDES_WINDOW_DAYS = 90;
 const STAR_MAX_VIDEOS = 200;
 const GUIDES_MAX_VIDEOS = 400;
 
-async function getStar(sb: ReturnType<typeof getServerSupabase>) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getStar(sb: any) {
   const { data } = await sb
     .from("accounts")
     .select(

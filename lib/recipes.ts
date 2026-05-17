@@ -67,9 +67,14 @@ function avg(nums: number[]): number {
  * Aggregates a corpus by format_tag → count + avg views.
  * Only counts videos with >0 views (excludes photos/unviewed).
  */
-function aggregateByTag(
-  videos: VideoLite[],
-): Map<string, { count: number; avg_views: number; usernames: Set<string>; hooks: string[] }> {
+interface TagAggregate {
+  count: number;
+  avg_views: number;
+  usernames: Set<string>;
+  hooks: string[];
+}
+
+function aggregateByTag(videos: VideoLite[]): Map<string, TagAggregate> {
   const out = new Map<
     string,
     { count: number; views: number[]; usernames: Set<string>; hooks: string[] }
@@ -89,9 +94,12 @@ function aggregateByTag(
       if (v.hook && e.hooks.length < 5) e.hooks.push(v.hook);
     }
   }
-  // Convert to final shape
-  return new Map(
-    [...out.entries()].map(([tag, e]) => [
+  // Convert to final shape. Explicit tuple type annotation prevents TS strict
+  // from widening to `(string | TagAggregate)[]`, which would make `new Map`
+  // reject the iterable on Vercel's build.
+  const entries: [string, TagAggregate][] = [];
+  for (const [tag, e] of out.entries()) {
+    entries.push([
       tag,
       {
         count: e.count,
@@ -99,8 +107,9 @@ function aggregateByTag(
         usernames: e.usernames,
         hooks: e.hooks,
       },
-    ]),
-  );
+    ]);
+  }
+  return new Map(entries);
 }
 
 export async function generateRecipes(
