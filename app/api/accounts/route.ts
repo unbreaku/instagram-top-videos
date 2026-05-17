@@ -70,22 +70,26 @@ export async function GET(req: Request) {
         ),
       ),
       Promise.all(
-        usernames.map((u) =>
-          sb
+        usernames.map((u) => {
+          // Star bypass: pending analysis for the star account considers the
+          // entire historical corpus (Pablo's posts go back to 2024 and are
+          // still part of what we want transcribed). Guides stick to 90d.
+          const isStar =
+            (accounts || []).find(
+              (a) => (a as { username: string; account_role?: string | null }).username === u,
+            )?.account_role === "star";
+          const cutoff = isStar
+            ? "2000-01-01T00:00:00.000Z"
+            : new Date(Date.now() - 90 * 86400 * 1000).toISOString();
+          return sb
             .from("videos")
             .select("shortcode", { count: "exact", head: true })
             .eq("account_username", u)
             .is("analyzed_at", null)
             .not("video_url", "is", null)
-            // Match the analyze-pending / cron policy: trailing 90 days,
-            // no minimum-views threshold. Counts what the backlog actually
-            // contains under current rules.
-            .gte(
-              "posted_at",
-              new Date(Date.now() - 90 * 86400 * 1000).toISOString(),
-            )
-            .then(({ count }) => ({ u, count: count ?? 0 })),
-        ),
+            .gte("posted_at", cutoff)
+            .then(({ count }) => ({ u, count: count ?? 0 }));
+        }),
       ),
     ],
   );

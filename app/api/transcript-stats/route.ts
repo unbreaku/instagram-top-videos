@@ -44,46 +44,53 @@ export async function GET() {
   const cutoff = new Date(
     Date.now() - WINDOW_DAYS * 86400 * 1000,
   ).toISOString();
+  // Star bypass: the star account is supposed to be analyzed on its FULL
+  // corpus (Pablo has posts from 2024 that fall outside the 90d window —
+  // those still count toward his DNA and transcript stats). Everyone else
+  // uses the standard 90d window for cost predictability.
+  const STAR_CUTOFF = "2000-01-01T00:00:00.000Z";
 
   // Seed from accounts so accounts with 0 videos still render with zeros.
+  // Pull account_role at the same time so we can apply the star bypass.
   const { data: accounts, error: accErr } = await sb
     .from("accounts")
-    .select("username")
+    .select("username, account_role")
     .is("deleted_at", null)
     .order("username", { ascending: true });
   if (accErr) {
     return NextResponse.json({ error: accErr.message }, { status: 500 });
   }
-  const usernames = (accounts || []).map((a) => (a as { username: string }).username);
+  const userList = (accounts || []) as Array<{
+    username: string;
+    account_role: string | null;
+  }>;
+  const cutoffFor = (u: string) =>
+    userList.find((a) => a.username === u)?.account_role === "star"
+      ? STAR_CUTOFF
+      : cutoff;
+  const usernames = userList.map((a) => a.username);
 
   // Helper: run a HEAD count with a filter callback. Avoids fetching any row
   // data, just gets `count` back from PostgREST. Multi-MB transcripts never
-  // touch the wire.
-  // We use `any` for the builder type because Supabase's generic chain types
-  // are deeply nested and don't survive function-parameter inference cleanly
-  // across versions. Runtime behavior is identical.
+  // touch the wire. Per-account cutoff respects the star bypass.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function count(username: string, apply: (q: any) => any): Promise<number> {
     let q: any = sb
       .from("videos")
       .select("shortcode", { count: "exact", head: true })
       .eq("account_username", username)
-      .gte("posted_at", cutoff);
+      .gte("posted_at", cutoffFor(username));
     q = apply(q);
     const { count: c } = await q;
     return c ?? 0;
   }
 
-  // For cost we need the SUM of duration_seconds for pending videos. PostgREST
-  // doesn't expose SUM directly without a view/RPC, but we can fetch just the
-  // duration column (small int) for the pending rows. That's bounded by
-  // pending count, typically <500 rows per account → tiny payload.
   async function sumPendingMinutes(username: string): Promise<number> {
     const { data } = await sb
       .from("videos")
       .select("duration_seconds")
       .eq("account_username", username)
-      .gte("posted_at", cutoff)
+      .gte("posted_at", cutoffFor(username))
       .not("video_url", "is", null)
       .is("transcript", null)
       .lt("analyze_attempts", 3);
