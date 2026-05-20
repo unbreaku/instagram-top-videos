@@ -10,6 +10,10 @@ export async function GET(req: Request) {
   const sb = getServerSupabase();
   const { searchParams } = new URL(req.url);
   const includeDeleted = searchParams.get("include_deleted") === "1";
+  // include_hidden=1 surfaces accounts flagged is_hidden=true (used by the
+  // /accounts management page so the owner can still un-hide them). The
+  // dashboard and the public reading path hide them by default.
+  const includeHidden = searchParams.get("include_hidden") === "1";
 
   // We deliberately do NOT order by account_role at the SQL level — if the
   // 0011 migration hasn't been applied yet (or the column otherwise doesn't
@@ -23,6 +27,7 @@ export async function GET(req: Request) {
     .order("is_pinned", { ascending: false })
     .order("username", { ascending: true });
   if (!includeDeleted) q = q.is("deleted_at", null);
+  if (!includeHidden) q = q.eq("is_hidden", false);
   const { data: accounts, error } = await q;
   if (error)
     return NextResponse.json({ error: error.message }, { status: 500 });

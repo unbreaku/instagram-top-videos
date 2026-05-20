@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 interface Account {
   username: string;
   is_pinned: boolean;
+  is_hidden?: boolean;
   account_role?: "star" | "guide" | null;
   video_count: number;
   posts_count: number | null;
@@ -139,8 +140,13 @@ export default function AccountsPage() {
     at?: string; // when we received this response
   } | null>(null);
 
+  // showHidden toggle: when ON, /accounts page shows accounts flagged
+  // is_hidden=true so the owner can un-hide them. The dashboard always
+  // hides them (no toggle there).
+  const [showHidden, setShowHidden] = useState(false);
   async function refresh() {
-    const res = await fetch("/api/accounts");
+    const qs = showHidden ? "?include_hidden=1" : "";
+    const res = await fetch(`/api/accounts${qs}`);
     const j = await res.json();
     setAccounts(j.accounts || []);
   }
@@ -163,7 +169,8 @@ export default function AccountsPage() {
     refresh();
     loadMigrations();
     loadTranscriptStats();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showHidden]);
 
   // Poll-refresh while any background scrape is active so badges update on
   // their own without the user having to mash refresh.
@@ -301,6 +308,26 @@ export default function AccountsPage() {
   }
 
   // ---------- EXISTING ACCOUNT ACTIONS ----------
+
+  async function toggleHidden(u: string, current: boolean) {
+    setOpenMenu(null);
+    setBusyAction(`hide-${u}`);
+    try {
+      await fetch(`/api/accounts/${u}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_hidden: !current }),
+      });
+      setMsg(
+        !current
+          ? `@${u} ocultado de la UI (el cron sigue capturando data normalmente).`
+          : `@${u} mostrado en la UI.`,
+      );
+      refresh();
+    } finally {
+      setBusyAction(null);
+    }
+  }
 
   async function togglePin(u: string, current: boolean) {
     setBusyAction(`pin-${u}`);
@@ -543,7 +570,18 @@ export default function AccountsPage() {
       )}
 
       {/* EXISTING ACCOUNTS LIST */}
-      <ul className="mt-6 divide-y divide-zinc-100 rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="mt-6 flex items-center justify-end gap-2 text-xs text-zinc-500">
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showHidden}
+            onChange={(e) => setShowHidden(e.target.checked)}
+            className="h-3.5 w-3.5"
+          />
+          Mostrar cuentas ocultas
+        </label>
+      </div>
+      <ul className="mt-2 divide-y divide-zinc-100 rounded-xl border border-zinc-200 bg-white shadow-sm">
         {accounts.map((a) => (
           <li key={a.username} className="flex items-center gap-3 p-4">
             <button
@@ -575,6 +613,14 @@ export default function AccountsPage() {
                     title="Cuenta estrella — la cuenta cuyo crecimiento queremos engineering. Recibe disección completa + comparativas vs guides."
                   >
                     ⭐ Estrella
+                  </span>
+                )}
+                {a.is_hidden && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-medium text-zinc-700"
+                    title="Oculta del dashboard. La data sigue capturándose normalmente."
+                  >
+                    🙈 Oculta
                   </span>
                 )}
                 {a.status?.scrape_active && (
@@ -657,6 +703,18 @@ export default function AccountsPage() {
                     {a.account_role === "star"
                       ? "↓ Desmarcar como estrella"
                       : "⭐ Marcar como cuenta estrella"}
+                  </button>
+                  <button
+                    onClick={() =>
+                      toggleHidden(a.username, !!a.is_hidden)
+                    }
+                    disabled={busyAction === `hide-${a.username}`}
+                    className="block w-full px-4 py-2 text-left text-sm hover:bg-zinc-50 disabled:opacity-50"
+                    title="Oculta de la UI pero el cron sigue capturando snapshots y posts."
+                  >
+                    {a.is_hidden
+                      ? "👁️ Mostrar en UI"
+                      : "🙈 Ocultar de la UI (data sigue corriendo)"}
                   </button>
                   <div className="border-t border-zinc-100" />
                   <button

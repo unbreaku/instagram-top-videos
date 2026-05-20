@@ -56,6 +56,7 @@ export async function GET() {
     .from("accounts")
     .select("username, account_role")
     .is("deleted_at", null)
+    .eq("is_hidden", false)
     .order("username", { ascending: true });
   if (accErr) {
     return NextResponse.json({ error: accErr.message }, { status: 500 });

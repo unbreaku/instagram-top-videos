@@ -33,9 +33,14 @@ export async function PATCH(req: Request, { params }: Params) {
   const username = clean(params.username);
   const body = (await req.json().catch(() => ({}))) as {
     is_pinned?: boolean;
+    is_hidden?: boolean;
   };
   const update: Record<string, unknown> = {};
   if (typeof body.is_pinned === "boolean") update.is_pinned = body.is_pinned;
+  // is_hidden is UI-only — the cron, snapshot capture, and drain pipelines
+  // intentionally ignore it. So toggling 'Ocultar' on an account doesn't
+  // affect data freshness, only what shows up in the dashboard.
+  if (typeof body.is_hidden === "boolean") update.is_hidden = body.is_hidden;
   if (Object.keys(update).length === 0)
     return NextResponse.json({ ok: true });
   const { error } = await sb
